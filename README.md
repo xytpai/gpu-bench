@@ -31,7 +31,7 @@ bash build_cuda.sh standard/peer_memory_bandwidth.cpp ; ./a.out
 Output:
 
 ```txt
-1GB peer copy test ...
+1GB peer copy test ... (GBps)
     dst/src        [0]        [1]        [2]        [3]        [4]        [5]        [6]        [7]
         [0]  1483.725     36.285     37.911     37.010     38.260     38.362     38.205     38.445
         [1]    36.736   1492.502     36.623     35.575     38.173     38.403     38.335     38.273
