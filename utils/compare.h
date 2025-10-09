@@ -1,9 +1,10 @@
 #pragma once
 
-#include <hip/hip_runtime.h>
 #include <iostream>
 #include <iomanip>
 #include <cmath>
+
+#include "device_common.h"
 
 template <typename scalar_t>
 struct CompareMaxdiff {
@@ -28,14 +29,14 @@ struct CompareMaxdiff {
             ptr_a = buf_a_;
         } else {
             ptr_a = new scalar_t[n_];
-            hipMemcpy(ptr_a, buf_a_, n_ * sizeof(scalar_t), hipMemcpyDeviceToHost);
+            gpuMemcpy(ptr_a, buf_a_, n_ * sizeof(scalar_t), gpuMemcpyDeviceToHost);
             is_a_new = true;
         }
         if (dev_b_ == CPU) {
             ptr_b = buf_b_;
         } else {
             ptr_b = new scalar_t[n_];
-            hipMemcpy(ptr_b, buf_b_, n_ * sizeof(scalar_t), hipMemcpyDeviceToHost);
+            gpuMemcpy(ptr_b, buf_b_, n_ * sizeof(scalar_t), gpuMemcpyDeviceToHost);
             is_b_new = true;
         }
         auto maxdiff = -std::numeric_limits<float>::infinity();

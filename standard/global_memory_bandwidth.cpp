@@ -1,7 +1,5 @@
 #include <iostream>
 #include <random>
-#include <hip/hip_runtime.h>
-#include <hip/hip_fp16.h>
 
 #include "utils.h"
 using namespace std;
@@ -35,18 +33,18 @@ float threads_copy(const T *in, T *out, size_t n) {
     dim3 threadsPerBlock(block_size);
     dim3 numBlocks((n + block_work_size - 1) / block_work_size);
 
-    hipEvent_t start, stop;
-    hipEventCreate(&start);
-    hipEventCreate(&stop);
-    hipEventRecord(start);
+    gpuEvent_t start, stop;
+    gpuEventCreate(&start);
+    gpuEventCreate(&stop);
+    gpuEventRecord(start);
 
     threads_copy_kernel<T, vec_size, loops><<<numBlocks, threadsPerBlock>>>(in, out, n);
-    hipDeviceSynchronize();
+    gpuDeviceSynchronize();
 
-    hipEventRecord(stop);
-    hipEventSynchronize(stop);
+    gpuEventRecord(stop);
+    gpuEventSynchronize(stop);
     float ms = 0;
-    hipEventElapsedTime(&ms, start, stop);
+    gpuEventElapsedTime(&ms, start, stop);
     return ms;
 }
 
@@ -57,21 +55,21 @@ void test_threads_copy(size_t n) {
     for (int i = 0; i < n; i++)
         in_cpu[i] = static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
 
-    scalar_t *in_hip, *out_hip;
-    hipMalloc(&in_hip, n * sizeof(scalar_t));
-    hipMalloc(&out_hip, n * sizeof(scalar_t));
+    scalar_t *in_gpu, *out_gpu;
+    gpuMalloc(&in_gpu, n * sizeof(scalar_t));
+    gpuMalloc(&out_gpu, n * sizeof(scalar_t));
 
-    hipMemcpy(in_hip, in_cpu, n * sizeof(scalar_t), hipMemcpyHostToDevice);
+    gpuMemcpy(in_gpu, in_cpu, n * sizeof(scalar_t), gpuMemcpyHostToDevice);
 
     float timems;
     for (int i = 0; i < 2; i++)
-        timems = threads_copy<scalar_t, vec_size, loops>(in_hip, out_hip, n);
+        timems = threads_copy<scalar_t, vec_size, loops>(in_gpu, out_gpu, n);
     std::cout << "timems:" << timems << " throughput:";
 
     float total_GBytes = (n + n) * sizeof(scalar_t) / 1000.0 / 1000.0;
     std::cout << total_GBytes / (timems) << " GBPS val:";
 
-    hipMemcpy(out_cpu, out_hip, n * sizeof(scalar_t), hipMemcpyDeviceToHost);
+    gpuMemcpy(out_cpu, out_gpu, n * sizeof(scalar_t), gpuMemcpyDeviceToHost);
 
     for (int i = 0; i < n; i++) {
         auto diff = (float)out_cpu[i] - (float)in_cpu[i];
@@ -83,8 +81,8 @@ void test_threads_copy(size_t n) {
     }
     std::cout << "ok\n";
 
-    hipFree(in_hip);
-    hipFree(out_hip);
+    gpuFree(in_gpu);
+    gpuFree(out_gpu);
     delete[] in_cpu;
     delete[] out_cpu;
 }

@@ -4,8 +4,9 @@
 #include <stdlib.h>
 #include <time.h>
 
-#include "comm.h"
+// #include "comm.h"
 #include "compare.h"
+#include "device_common.h"
 #include "memory.h"
 
 template <typename DataType>
