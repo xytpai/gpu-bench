@@ -13,6 +13,7 @@
 #define gpuFree hipFree
 #define gpuDeviceSynchronize hipDeviceSynchronize
 #define gpuSetDevice hipSetDevice
+#define gpuGetDeviceCount hipGetDeviceCount
 #define gpuMemcpyPeerAsync hipMemcpyPeerAsync
 
 #define gpuEvent_t hipEvent_t
@@ -40,6 +41,7 @@
 #define gpuFree cudaFree
 #define gpuDeviceSynchronize cudaDeviceSynchronize
 #define gpuSetDevice cudaSetDevice
+#define gpuGetDeviceCount cudaGetDeviceCount
 #define gpuMemcpyPeerAsync cudaMemcpyPeerAsync
 
 #define gpuEvent_t cudaEvent_t
