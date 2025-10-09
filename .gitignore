@@ -151,3 +151,4 @@ checkpoints/*.ckpt
 .datacache
 *.ckpt
 *.csv
+gpucore.*
