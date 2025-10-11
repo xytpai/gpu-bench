@@ -93,7 +93,10 @@ void measure_peer_bandwidth(size_t buffer_bytes, int num_buffers, int streams_pe
     size_t nbytes_total = path_count * num_buffers * buffer_bytes * iters;
     double bw_total = ((double)nbytes_total / seconds) / 1e9;
 
-    std::cout << "bw_total: " << bw_total << "\n";
+    std::cout << "num paths: " << paths.size() << "\n";
+    std::cout << "num buffers per GPU: " << num_buffers << "\n";
+    std::cout << "buffer bytes: " << buffer_bytes / 1024 / 1024 << " MB\n";
+    std::cout << "bandwidth total: " << bw_total << " GBps\n";
 
     // cleanup
     for (int g = 0; g < ngpus; ++g) {
@@ -104,8 +107,8 @@ void measure_peer_bandwidth(size_t buffer_bytes, int num_buffers, int streams_pe
 }
 
 int main() {
-    std::cout << "1GB a2a peer copy test ... (GBps)\n";
-    int nbuffers = 8;
-    int buffer_bytes = 1024 * 1024 * 1024 / 8;
-    measure_peer_bandwidth(buffer_bytes, nbuffers, nbuffers, 100);
+    std::cout << "a2a copy test ... \n";
+    int nbuffers = 32;
+    int buffer_bytes = 1024 * 1024 * 1024 / 32;
+    measure_peer_bandwidth(buffer_bytes, nbuffers, nbuffers, 1);
 }
