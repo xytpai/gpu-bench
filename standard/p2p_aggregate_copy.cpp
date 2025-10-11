@@ -45,6 +45,7 @@ void reset_send_buffers(std::vector<GPUResources> &rs, unsigned char flag) {
         size_t buffer_bytes = rs[i].buffer_bytes;
         gpuMemset(rs[i].send_buffers, (flag + i) % 255, 1);
         gpuMemset((unsigned char *)rs[i].send_buffers + buffer_bytes - 1, (flag + i + 1) % 255, 1);
+        gpuDeviceSynchronize();
     }
 }
 
@@ -58,6 +59,7 @@ bool validate_recv_buffers(int local, std::vector<GPUResources> &rs, unsigned ch
         auto ptr = (unsigned char *)rs[local].recv_buffers[peer];
         gpuMemcpy(data, ptr, 1, gpuMemcpyDeviceToHost);
         gpuMemcpy(data + 1, ptr + buffer_bytes - 1, 1, gpuMemcpyDeviceToHost);
+        gpuDeviceSynchronize();
         c0 = data[0] == (flag + peer) % 255;
         c1 = data[1] == (flag + peer + 1) % 255;
         if (!(c0 && c1)) return false;
@@ -65,6 +67,7 @@ bool validate_recv_buffers(int local, std::vector<GPUResources> &rs, unsigned ch
         ptr = (unsigned char *)rs[peer].recv_buffers[local];
         gpuMemcpy(data, ptr, 1, gpuMemcpyDeviceToHost);
         gpuMemcpy(data + 1, ptr + buffer_bytes - 1, 1, gpuMemcpyDeviceToHost);
+        gpuDeviceSynchronize();
         c0 = data[0] == (flag + local) % 255;
         c1 = data[1] == (flag + local + 1) % 255;
         if (!(c0 && c1)) return false;
