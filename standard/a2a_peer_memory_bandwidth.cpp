@@ -66,9 +66,12 @@ void validate(std::vector<GPUResources> &rs, unsigned char flag) {
             if (g == rg) continue;
             for (int b = 0; b < rs[g].recv_buffers[rg].size(); ++b) {
                 auto ptr = (unsigned char *)rs[g].recv_buffers[rg][b];
+                unsigned char data[2];
+                gpuMemcpy(data, ptr, 1, gpuMemcpyDeviceToHost);
+                gpuMemcpy(data + 1, ptr + buffer_bytes - 1, 1, gpuMemcpyDeviceToHost);
                 auto flag_ = flag + rg * 10 + b;
-                bool c0 = (flag_) == *ptr;
-                bool c1 = (flag_ + 1) == *(ptr + buffer_bytes - 1);
+                bool c0 = (flag_) == data[0];
+                bool c1 = (flag_ + 1) == data[1];
                 if (c0 && c1) {
                     // do nothing;
                 } else {
