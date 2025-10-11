@@ -56,13 +56,13 @@ float measure_uva_access(int dst_dev, int src_dev, const size_t n, bool val) {
 
     float *local = nullptr;
     gpuSetDevice(src_dev);
-    gpuDeviceEnablePeerAccess(dst_dev, 0);
+    // gpuDeviceEnablePeerAccess(dst_dev, 0);
     gpuMalloc(&local, bytes);
     gpuMemcpy(local, data, n * sizeof(float), gpuMemcpyHostToDevice);
 
     float *peer = nullptr;
     gpuSetDevice(dst_dev);
-    gpuDeviceEnablePeerAccess(src_dev, 0);
+    // gpuDeviceEnablePeerAccess(src_dev, 0);
     gpuMalloc(&peer, bytes);
     gpuMemset(peer, 0, bytes);
 
@@ -95,6 +95,7 @@ float measure_uva_access(int dst_dev, int src_dev, const size_t n, bool val) {
 
 int main() {
     std::cout << "1GB threads uva peer copy test <src_r, dst_w> ... (GBps)\n";
+    enable_p2p();
     int device_count = 0;
     gpuGetDeviceCount(&device_count);
     std::cout << std::right << std::setw(11) << "dst/src";

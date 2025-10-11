@@ -1,53 +1,55 @@
-bash build_rocm.sh standard/a2a_peer_memory_bandwidth.cpp
-
-======== A2A COPY TEST ========
-enable p2p ... 
-allocate resources ... 
-warmup ... 
-run iters ... 
-num gpus: 8
-num paths: 56
-num buffers per gpu: 64
-buffer bytes: 64 MB
-streams per gpu: 64
-allocated bytes per gpu: 36 GB
-bandwidth total: 1453.5 GBps
-bandwidth per gpu: 363.376 GBps
-
 bash build_rocm.sh standard/global_memory_bandwidth.cpp
 
 1GB threads copy test ...
-float1: timems:0.589762 throughput:3641.27 GBPS val:ok
-float2: timems:0.380322 throughput:5646.49 GBPS val:ok
-float4: timems:0.359362 throughput:5975.82 GBPS val:ok
-float8: timems:0.451082 throughput:4760.74 GBPS val:ok
-half1: timems:0.992485 throughput:2163.74 GBPS val:ok
-half2: timems:0.589643 throughput:3642.01 GBPS val:ok
-half4: timems:0.381362 throughput:5631.09 GBPS val:ok
-half8: timems:0.361362 throughput:5942.75 GBPS val:ok
+float1: timems:0.58644 throughput:3661.9 GBPS val:ok
+float2: timems:0.375 throughput:5726.62 GBPS val:ok
+float4: timems:0.35552 throughput:6040.4 GBPS val:ok
+float8: timems:0.464 throughput:4628.2 GBPS val:ok
+half1: timems:1.01068 throughput:2124.79 GBPS val:ok
+half2: timems:0.587281 throughput:3656.65 GBPS val:ok
+half4: timems:0.37912 throughput:5664.39 GBPS val:ok
+half8: timems:0.3528 throughput:6086.97 GBPS val:ok
 
-bash build_rocm.sh standard/single_peer_memory_bandwidth.cpp
+bash build_rocm.sh standard/p2p_aggregate_copy.cpp
+
+1GB p2p aggregate copy test ... 
+[0]: 845.321 GBps --- val:1
+[1]: 845.494 GBps --- val:1
+[2]: 845.82 GBps --- val:1
+[3]: 846.446 GBps --- val:1
+[4]: 845.407 GBps --- val:1
+[5]: 845.333 GBps --- val:1
+[6]: 845.548 GBps --- val:1
+[7]: 845.926 GBps --- val:1
+
+bash build_rocm.sh standard/p2p_all2all_simple_copy.cpp
+
+1GB p2p all-to-all simple copy test ... 
+Total: 3261.46 GBps --- val:1
+Per GPU: 815.364 GBps
+
+bash build_rocm.sh standard/p2p_single_copy.cpp
 
 1GB peer single copy test ... (GBps)
     dst/src        [0]        [1]        [2]        [3]        [4]        [5]        [6]        [7]
-        [0]  2503.589     61.194     61.204     61.227     61.188     61.206     61.240     61.265 
-        [1]    61.215   2237.321     61.227     61.219     61.200     61.196     61.201     61.257 
-        [2]    61.221     61.214   2399.091     61.205     61.197     61.209     61.211     61.240 
-        [3]    61.248     61.199     61.220   2172.146     61.194     61.198     61.207     61.241 
-        [4]    61.228     61.200     61.205     61.206   2427.292     61.200     61.203     61.266 
-        [5]    61.249     61.210     61.215     61.212     61.187   2107.513     61.228     61.253 
-        [6]    61.224     61.204     61.201     61.203     61.199     61.240   2116.820     61.245 
-        [7]    61.228     61.196     61.224     61.208     61.206     61.217     61.207   2476.102 
+        [0]  2525.503     61.235     61.252     61.306     61.230     61.252     61.270     61.287 
+        [1]    61.271   2151.179     61.263     61.305     61.231     61.249     61.268     61.292 
+        [2]    61.258     61.244   2142.081     61.301     61.227     61.263     61.268     61.291 
+        [3]    61.282     61.237     61.259   2535.633     61.231     61.249     61.267     61.288 
+        [4]    61.270     61.240     61.256     61.294   2111.666     61.254     61.271     61.295 
+        [5]    61.279     61.238     61.265     61.297     61.235   2288.448     61.275     61.296 
+        [6]    61.269     61.240     61.257     61.294     61.236     61.260   2371.228     61.281 
+        [7]    61.281     61.238     61.262     61.292     61.236     61.250     61.270   2044.128 
 
 bash build_rocm.sh standard/uva_peer_access.cpp
 
 1GB threads uva peer copy test <src_r, dst_w> ... (GBps)
     dst/src        [0]        [1]        [2]        [3]        [4]        [5]        [6]        [7]
-        [0]  5944.065    127.313    127.126    127.294    127.312    127.315    127.323    127.260 
-        [1]   127.306   5902.892    127.294    127.321    127.300    127.299    127.304    127.320 
-        [2]   127.294    127.303   5947.357    127.317    127.318    127.305    127.316    127.277 
-        [3]   127.292    127.310    127.307   5875.758    127.317    127.310    127.317    127.290 
-        [4]   127.296    127.305    127.295    127.293   5940.776    127.290    127.291    127.275 
-        [5]   127.306    127.300    127.292    127.302    127.263   6015.327    127.290    127.293 
-        [6]   127.297    127.297    127.295    127.298    127.287    127.258   5945.381    127.299 
-        [7]   127.252    127.303    127.201    127.287    127.268    127.285    127.288   5936.178
+        [0]  5952.006    127.317    127.241    127.295    127.319    127.316    127.317    127.270 
+        [1]   127.308   6024.135    127.300    127.317    127.308    127.327    127.314    127.316 
+        [2]   127.305    127.305   5982.515    127.318    127.310    127.317    127.314    127.312 
+        [3]   127.298    127.315    127.316   6025.487    127.317    127.309    127.316    127.324 
+        [4]   127.301    127.310    127.292    127.296   5967.885    127.291    127.298    127.261 
+        [5]   127.301    127.299    127.295    127.301    127.274   5925.728    127.286    127.256 
+        [6]   127.262    127.301    127.291    127.293    127.271    127.267   5977.170    127.293 
+        [7]   127.296    127.289    127.209    127.285    127.275    127.301    127.292   5942.108
