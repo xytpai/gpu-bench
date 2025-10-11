@@ -62,7 +62,7 @@ int main() {
     for (int dst = 0; dst < device_count; ++dst) {
         std::cout << std::right << std::setw(11) << ("[" + std::to_string(dst) + "]");
         for (int src = 0; src < device_count; ++src) {
-            auto bw = measure_peer_bandwidth(dst, src, 1024 * 1024 * 1024);
+            auto bw = measure_peer_bandwidth(dst, src, (size_t)8 * 1024 * 1024 * 1024);
             std::cout << std::setw(10) << std::fixed << std::setprecision(3) << bw << " ";
         }
         std::cout << "\n";
