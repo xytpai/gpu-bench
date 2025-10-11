@@ -62,6 +62,8 @@
 
 #endif
 
+#include <cassert>
+
 void enable_p2p() {
     int ngpus = 0;
     gpuGetDeviceCount(&ngpus);
