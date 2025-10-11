@@ -147,6 +147,7 @@ void measure_peer_bandwidth(size_t buffer_bytes, int num_buffers, int streams_pe
     size_t nbytes_total = path_count * num_buffers * buffer_bytes * iters;
     size_t nbytes_per_gpu = (ngpus - 1) * 2 * num_buffers * buffer_bytes * iters;
 
+    std::cout << "num gpus: " << ngpus << "\n";
     std::cout << "num paths: " << paths.size() << "\n";
     std::cout << "num buffers per gpu: " << num_buffers << "\n";
     std::cout << "buffer bytes: " << buffer_bytes / 1024 / 1024 << " MB\n";
