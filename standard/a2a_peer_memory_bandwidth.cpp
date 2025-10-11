@@ -64,7 +64,7 @@ void validate(std::vector<GPUResources> &rs, unsigned char val) {
         for (auto &ptr_ : rs[g].recv_buffers) {
             auto ptr = (unsigned char *)ptr_;
             bool c0 = val == *ptr;
-            bool c1 = val == *(ptr + bb - 1);
+            bool c1 = (val + 1) == *(ptr + bb - 1);
             if (c0 && c1) {
                 // do nothing;
             } else {
@@ -90,7 +90,8 @@ void measure_peer_bandwidth(size_t buffer_bytes, int num_buffers, int streams_pe
             gpuMalloc(&rs[g].send_buffers[b], buffer_bytes);
             gpuMalloc(&rs[g].recv_buffers[b], buffer_bytes);
             // Initialize memory with something to avoid zero-page optimizations
-            gpuMemset(rs[g].send_buffers[b], 0xA5, buffer_bytes);
+            gpuMemset(rs[g].send_buffers[b], 0xA5, 1);
+            gpuMemset((unsigned char *)rs[g].send_buffers[b] + buffer_bytes - 1, 0xA6, 1);
             gpuMemset(rs[g].recv_buffers[b], 0x01, buffer_bytes);
         }
         rs[g].streams.resize(streams_per_gpu);
@@ -108,7 +109,8 @@ void measure_peer_bandwidth(size_t buffer_bytes, int num_buffers, int streams_pe
     for (int g = 0; g < ngpus; ++g) {
         gpuSetDevice(g);
         for (int b = 0; b < num_buffers; ++b) {
-            gpuMemset(rs[g].send_buffers[b], 0xA6, buffer_bytes);
+            gpuMemset(rs[g].send_buffers[b], 0xA3, 1);
+            gpuMemset((unsigned char *)rs[g].send_buffers[b] + buffer_bytes - 1, 0xA4, 1);
             gpuMemset(rs[g].recv_buffers[b], 0x02, buffer_bytes);
         }
     }
@@ -131,7 +133,7 @@ void measure_peer_bandwidth(size_t buffer_bytes, int num_buffers, int streams_pe
     std::cout << "streams per gpu: " << streams_per_gpu << "\n";
     std::cout << "bandwidth total: " << bw_total << " GBps\n";
 
-    validate(rs, 0xA6);
+    validate(rs, 0xA3);
 
     // cleanup
     for (int g = 0; g < ngpus; ++g) {
@@ -145,7 +147,7 @@ void measure_peer_bandwidth(size_t buffer_bytes, int num_buffers, int streams_pe
 int main() {
     std::cout << "a2a copy test ... \n";
     size_t buffer_bytes = (size_t)1024 * 1024 * 1024 / 8;
-    int num_buffers = 128;
+    int num_buffers = 64;
     int streams_per_gpu = 64;
     measure_peer_bandwidth(buffer_bytes, num_buffers, streams_per_gpu, 1);
 }
