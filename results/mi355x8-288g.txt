@@ -22,9 +22,9 @@ bash build_rocm.sh standard/p2p_aggregate_copy.cpp
 [6]: 845.548 GBps --- val:1
 [7]: 845.926 GBps --- val:1
 
-bash build_rocm.sh standard/p2p_all2all_simple_copy.cpp
+bash build_rocm.sh standard/p2p_allgather_simple.cpp
 
-1GB p2p all-to-all simple copy test ... 
+1GB p2p allgather simple test ... 
 Total: 3261.46 GBps --- val:1
 Per GPU: 815.364 GBps
 

@@ -67,7 +67,7 @@ bool validate_recv_buffers(std::vector<GPUResources> &rs, unsigned char flag) {
     return true;
 }
 
-void run_a2a_copy(std::vector<GPUResources> &rs) {
+void run_p2p(std::vector<GPUResources> &rs) {
     int ngpus = rs.size();
     for (int local = 0; local < ngpus; ++local) {
         for (int peer = 0; peer < ngpus; ++peer) {
@@ -97,13 +97,13 @@ std::tuple<float, bool> measure_p2p_bandwidth(size_t buffer_bytes) {
 
     // std::cout << "warmup ... \n";
     for (int w = 0; w < 2; ++w) {
-        run_a2a_copy(rs);
+        run_p2p(rs);
     }
 
     // std::cout << "run iters ... \n";
     reset_send_buffers(rs, 0xA1);
     auto t0 = std::chrono::high_resolution_clock::now();
-    run_a2a_copy(rs);
+    run_p2p(rs);
     auto t1 = std::chrono::high_resolution_clock::now();
     double seconds = std::chrono::duration<double>(t1 - t0).count();
     size_t nbytes_total = (ngpus * ngpus - ngpus) * buffer_bytes;
@@ -122,7 +122,7 @@ std::tuple<float, bool> measure_p2p_bandwidth(size_t buffer_bytes) {
 }
 
 int main() {
-    std::cout << "1GB p2p all-to-all simple copy test ... \n";
+    std::cout << "1GB p2p allgather simple test ... \n";
     enable_p2p();
     int ngpus = 0;
     gpuGetDeviceCount(&ngpus);
