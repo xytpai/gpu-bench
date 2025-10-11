@@ -119,8 +119,11 @@ std::tuple<float, bool> measure_p2p_bandwidth(size_t buffer_bytes) {
 }
 
 int main() {
+    int ngpus = 0;
+    gpuGetDeviceCount(&ngpus);
     std::cout << "1GB p2p all-to-all simple copy test ... \n";
     size_t buffer_bytes = (size_t)1024 * 1024 * 1024;
     auto [bw, valid] = measure_p2p_bandwidth(buffer_bytes);
-    std::cout << bw << " GBps --- val:" << valid << "\n";
+    std::cout << "Total: " << bw << " GBps --- val:" << valid << "\n";
+    std::cout << "Per GPU: " << bw / ngpus * 2 << " GBps\n";
 }
