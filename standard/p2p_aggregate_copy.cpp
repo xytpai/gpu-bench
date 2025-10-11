@@ -2,6 +2,7 @@
 #include <random>
 #include <vector>
 #include <tuple>
+#include <chrono>
 
 #include "utils.h"
 using namespace std;
@@ -90,7 +91,9 @@ void run_aggregate_copy(int local, std::vector<GPUResources> &rs) {
     }
     for (int g = 0; g < ngpus; ++g) {
         gpuSetDevice(g);
-        gpuDeviceSynchronize();
+        for (auto s : rs[g].streams) {
+            gpuStreamSynchronize(s);
+        }
     }
 }
 
@@ -107,16 +110,10 @@ std::tuple<float, bool> measure_p2p_bandwidth(int local, size_t buffer_bytes) {
 
     // std::cout << "run iters ... \n";
     reset_send_buffers(rs, 0xA1);
-    gpuEvent_t start, stop;
-    gpuEventCreate(&start);
-    gpuEventCreate(&stop);
-    gpuEventRecord(start);
+    auto t0 = std::chrono::high_resolution_clock::now();
     run_aggregate_copy(local, rs);
-    gpuEventRecord(stop);
-    gpuEventSynchronize(stop);
-    float ms = 0;
-    gpuEventElapsedTime(&ms, start, stop);
-    double seconds = ms / 1000.0;
+    auto t1 = std::chrono::high_resolution_clock::now();
+    double seconds = std::chrono::duration<double>(t1 - t0).count();
     size_t nbytes_total = (ngpus - 1) * 2 * buffer_bytes;
     float gbps = ((double)nbytes_total / seconds) / 1e9;
     bool valid = validate_recv_buffers(local, rs, 0xA1);
