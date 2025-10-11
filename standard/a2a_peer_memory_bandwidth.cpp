@@ -1,6 +1,5 @@
 #include <iostream>
 #include <random>
-#include <chrono>
 #include <vector>
 
 #include "utils.h"
@@ -59,6 +58,7 @@ void run_a2a(std::vector<Path> &paths, std::vector<GPUResources> &rs) {
 }
 
 void validate(std::vector<GPUResources> &rs, unsigned char flag) {
+    unsigned char *data = new unsigned char[2];
     for (int g = 0; g < rs.size(); ++g) {
         gpuSetDevice(g);
         int buffer_bytes = rs[g].buffer_bytes;
@@ -66,10 +66,9 @@ void validate(std::vector<GPUResources> &rs, unsigned char flag) {
             if (g == rg) continue;
             for (int b = 0; b < rs[g].recv_buffers[rg].size(); ++b) {
                 auto ptr = (unsigned char *)rs[g].recv_buffers[rg][b];
-                unsigned char data[2];
                 gpuMemcpy(data, ptr, 1, gpuMemcpyDeviceToHost);
                 gpuMemcpy(data + 1, ptr + buffer_bytes - 1, 1, gpuMemcpyDeviceToHost);
-                auto flag_ = flag + rg * 10 + b;
+                unsigned char flag_ = (flag + rg * 10 + b) % 255;
                 bool c0 = (flag_) == data[0];
                 bool c1 = (flag_ + 1) == data[1];
                 if (c0 && c1) {
@@ -81,6 +80,7 @@ void validate(std::vector<GPUResources> &rs, unsigned char flag) {
             }
         }
     }
+    delete[] data;
 }
 
 void measure_peer_bandwidth(size_t buffer_bytes, int num_buffers, int streams_per_gpu, int iters, int warmups = 2) {
@@ -100,12 +100,13 @@ void measure_peer_bandwidth(size_t buffer_bytes, int num_buffers, int streams_pe
         for (int b = 0; b < num_buffers; ++b) {
             gpuMalloc(&rs[g].send_buffers[b], buffer_bytes);
             // Initialize memory with something to avoid zero-page optimizations
-            auto flag_ = flag + g * 10 + b;
+            unsigned char flag_ = (flag + g * 10 + b) % 255;
             gpuMemset(rs[g].send_buffers[b], flag_, 1);
             gpuMemset((unsigned char *)rs[g].send_buffers[b] + buffer_bytes - 1, flag_ + 1, 1);
         }
         rs[g].recv_buffers.resize(ngpus);
         for (int rg = 0; rg < ngpus; ++rg) {
+            if (rg == g) continue;
             rs[g].recv_buffers[rg].resize(num_buffers);
             for (int b = 0; b < num_buffers; ++b) {
                 gpuMalloc(&rs[g].recv_buffers[rg][b], buffer_bytes);
@@ -128,22 +129,33 @@ void measure_peer_bandwidth(size_t buffer_bytes, int num_buffers, int streams_pe
     for (int g = 0; g < ngpus; ++g) {
         gpuSetDevice(g);
         for (int b = 0; b < num_buffers; ++b) {
-            auto flag_ = flag + g * 10 + b;
+            unsigned char flag_ = (flag + g * 10 + b) % 255;
             gpuMemset(rs[g].send_buffers[b], flag_, 1);
             gpuMemset((unsigned char *)rs[g].send_buffers[b] + buffer_bytes - 1, flag_ + 1, 1);
         }
+        gpuDeviceSynchronize();
     }
 
     // run
     std::cout << "run iters ... \n";
-    auto t0 = std::chrono::high_resolution_clock::now();
+
+    gpuEvent_t start, stop;
+    gpuEventCreate(&start);
+    gpuEventCreate(&stop);
+    gpuEventRecord(start);
+
     for (int i = 0; i < iters; ++i) {
         run_a2a(paths, rs);
     }
-    auto t1 = std::chrono::high_resolution_clock::now();
-    double seconds = std::chrono::duration<double>(t1 - t0).count();
+
+    gpuEventRecord(stop);
+    gpuEventSynchronize(stop);
+    float ms = 0;
+    gpuEventElapsedTime(&ms, start, stop);
+    double seconds = ms / 1000.0;
 
     size_t path_count = paths.size();
+    size_t nbytes_data = num_buffers * buffer_bytes * iters;
     size_t nbytes_total = path_count * num_buffers * buffer_bytes * iters;
     size_t nbytes_per_gpu = (ngpus - 1) * 2 * num_buffers * buffer_bytes * iters;
 
@@ -151,9 +163,12 @@ void measure_peer_bandwidth(size_t buffer_bytes, int num_buffers, int streams_pe
     std::cout << "num paths: " << paths.size() << "\n";
     std::cout << "num buffers per gpu: " << num_buffers << "\n";
     std::cout << "buffer bytes: " << buffer_bytes / 1024 / 1024 << " MB\n";
+    std::cout << "total buffer bytes per gpu: " << num_buffers * buffer_bytes / 1024 / 1024 << " MB\n";
     std::cout << "streams per gpu: " << streams_per_gpu << "\n";
-    std::cout << "allocated bytes per gpu: " << (1 + ngpus) * num_buffers * buffer_bytes / 1024 / 1024 / 1024 << " GB\n";
+    std::cout << "allocated bytes per gpu: " << ngpus * num_buffers * buffer_bytes / 1024 / 1024 / 1024 << " GB\n";
+    std::cout << "latency: " << ms * 1000 / iters << " us\n";
     std::cout << "bandwidth total: " << ((double)nbytes_total / seconds) / 1e9 << " GBps\n";
+    std::cout << "bandwidth unit dir single: " << ((double)nbytes_data / seconds) / 1e9 << " GBps\n";
     std::cout << "bandwidth per gpu: " << ((double)nbytes_per_gpu / seconds) / 1e9 << " GBps\n";
 
     validate(rs, flag);
