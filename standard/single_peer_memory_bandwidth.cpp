@@ -51,7 +51,7 @@ float measure_peer_bandwidth(int dst_dev, int src_dev, size_t bytes) {
 }
 
 int main() {
-    std::cout << "1GB peer copy test ... (GBps)\n";
+    std::cout << "1GB peer single copy test ... (GBps)\n";
     int device_count = 0;
     gpuGetDeviceCount(&device_count);
     std::cout << std::right << std::setw(11) << "dst/src";

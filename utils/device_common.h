@@ -15,6 +15,7 @@
 #define gpuSetDevice hipSetDevice
 #define gpuGetDeviceCount hipGetDeviceCount
 #define gpuMemcpyPeerAsync hipMemcpyPeerAsync
+#define gpuDeviceCanAccessPeer hipDeviceCanAccessPeer
 #define gpuDeviceEnablePeerAccess hipDeviceEnablePeerAccess
 
 #define gpuEvent_t hipEvent_t
@@ -44,6 +45,7 @@
 #define gpuSetDevice cudaSetDevice
 #define gpuGetDeviceCount cudaGetDeviceCount
 #define gpuMemcpyPeerAsync cudaMemcpyPeerAsync
+#define gpuDeviceCanAccessPeer cudaDeviceCanAccessPeer
 #define gpuDeviceEnablePeerAccess cudaDeviceEnablePeerAccess
 
 #define gpuEvent_t cudaEvent_t
