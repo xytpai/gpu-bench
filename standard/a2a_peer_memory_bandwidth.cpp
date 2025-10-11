@@ -148,6 +148,7 @@ void measure_peer_bandwidth(size_t buffer_bytes, int num_buffers, int streams_pe
     std::cout << "num buffers per gpu: " << num_buffers << "\n";
     std::cout << "buffer bytes: " << buffer_bytes / 1024 / 1024 << " MB\n";
     std::cout << "streams per gpu: " << streams_per_gpu << "\n";
+    std::cout << "allocated bytes per gpu: " << (1 + ngpus) * num_buffers * buffer_bytes / 1024 / 1024 / 1024 << " GB\n";
     std::cout << "bandwidth total: " << bw_total << " GBps\n";
 
     validate(rs, flag);
@@ -165,7 +166,7 @@ void measure_peer_bandwidth(size_t buffer_bytes, int num_buffers, int streams_pe
 
 int main() {
     std::cout << "======== A2A COPY TEST ========\n";
-    size_t buffer_bytes = (size_t)1024 * 1024 * 1024 / 8;
+    size_t buffer_bytes = (size_t)1024 * 1024 * 1024 / 16;
     int num_buffers = 64;
     int streams_per_gpu = 64;
     measure_peer_bandwidth(buffer_bytes, num_buffers, streams_per_gpu, 1);
