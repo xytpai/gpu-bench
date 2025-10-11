@@ -94,6 +94,7 @@ void run_aggregate_copy(int local, std::vector<GPUResources> &rs) {
         for (auto s : rs[g].streams) {
             gpuStreamSynchronize(s);
         }
+        gpuDeviceSynchronize();
     }
 }
 

@@ -83,6 +83,7 @@ void run_a2a_copy(std::vector<GPUResources> &rs) {
         for (auto s : rs[g].streams) {
             gpuStreamSynchronize(s);
         }
+        gpuDeviceSynchronize();
     }
 }
 
