@@ -69,6 +69,9 @@ void enable_p2p() {
         gpuSetDevice(local);
         for (int peer = 0; peer < ngpus; ++peer) {
             if (local == peer) continue;
+            int can = 0;
+            gpuDeviceCanAccessPeer(&can, local, peer);
+            assert(can);
             gpuDeviceEnablePeerAccess(peer, 0);
         }
     }
