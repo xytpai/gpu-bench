@@ -1,0 +1,55 @@
+bash build_cuda.sh standard/a2a_peer_memory_bandwidth.cpp
+
+======== A2A COPY TEST ========
+enable p2p ...
+allocate resources ...
+warmup ...
+val:error!
+val:error!
+run iters ...
+num gpus: 8
+num paths: 56
+num buffers per gpu: 64
+buffer bytes: 64 MB
+streams per gpu: 64
+allocated bytes per gpu: 36 GB
+bandwidth total: 88058.8 GBps
+bandwidth per gpu: 22014.7 GBps
+val:error!
+
+bash build_cuda.sh standard/global_memory_bandwidth.cpp
+
+1GB threads copy test ...
+float1: timems:0.725216 throughput:2961.16 GBPS val:ok
+float2: timems:0.434624 throughput:4941.02 GBPS val:ok
+float4: timems:0.329344 throughput:6520.49 GBPS val:ok
+float8: timems:0.321568 throughput:6678.16 GBPS val:ok
+half1: timems:1.33798 throughput:1605.01 GBPS val:ok
+half2: timems:0.736128 throughput:2917.27 GBPS val:ok
+half4: timems:0.433088 throughput:4958.54 GBPS val:ok
+half8: timems:0.329536 throughput:6516.69 GBPS val:ok
+
+bash build_cuda.sh standard/single_peer_memory_bandwidth.cpp
+
+1GB peer single copy test ... (GBps)
+    dst/src        [0]        [1]        [2]        [3]        [4]        [5]        [6]        [7]
+        [0]  3128.327     33.016     33.060     33.178     35.030     34.876     35.366     35.188
+        [1]    32.873   3138.568     32.804     32.877     35.366     34.499     35.254     35.103
+        [2]    32.855     32.984   3136.514     33.264     34.990     34.933     34.996     34.914
+        [3]    32.836     32.742     32.951   3161.039     34.832     34.677     34.900     34.818
+        [4]    33.882     33.893     33.962     33.874   3167.604     35.417     35.360     35.355
+        [5]    33.840     33.990     34.080     33.966     35.812   3161.039     35.825     35.620
+        [6]    33.919     33.861     33.920     33.905     35.350     35.442   3171.197     35.318
+        [7]    33.793     33.910     33.946     33.957     35.455     35.521     35.475   3155.391
+
+bash build_cuda.sh standard/uva_peer_access.cpp
+
+1GB threads uva peer copy test <src_r, dst_w> ... (GBps)
+    dst/src        [0]        [1]        [2]        [3]        [4]        [5]        [6]        [7]
+        [0]  6521.122 error
+Traceback (most recent call last):
+  File "/home/zejchen/gpu-bench/run_all_tests.py", line 23, in <module>
+    check_call(['./a.out'])
+  File "/usr/lib/python3.10/subprocess.py", line 369, in check_call
+    raise CalledProcessError(retcode, cmd)
+subprocess.CalledProcessError: Command '['./a.out']' died with <Signals.SIGSEGV: 11>.

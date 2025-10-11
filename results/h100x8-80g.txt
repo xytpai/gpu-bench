@@ -1,0 +1,53 @@
+bash build_cuda.sh standard/a2a_peer_memory_bandwidth.cpp
+
+======== A2A COPY TEST ========
+enable p2p ...
+allocate resources ...
+warmup ...
+run iters ...
+num gpus: 8
+num paths: 56
+num buffers per gpu: 64
+buffer bytes: 64 MB
+streams per gpu: 64
+allocated bytes per gpu: 36 GB
+bandwidth total: 1234 GBps
+bandwidth per gpu: 308.501 GBps
+
+bash build_cuda.sh standard/global_memory_bandwidth.cpp
+
+1GB threads copy test ...
+float1: timems:0.88496 throughput:2426.64 GBPS val:ok
+float2: timems:0.74112 throughput:2897.62 GBPS val:ok
+float4: timems:0.714272 throughput:3006.53 GBPS val:ok
+float8: timems:0.7272 throughput:2953.09 GBPS val:ok
+half1: timems:1.45155 throughput:1479.44 GBPS val:ok
+half2: timems:0.894784 throughput:2400 GBPS val:ok
+half4: timems:0.741024 throughput:2897.99 GBPS val:ok
+half8: timems:0.715072 throughput:3003.17 GBPS val:ok
+
+bash build_cuda.sh standard/single_peer_memory_bandwidth.cpp
+
+1GB peer single copy test ... (GBps)
+    dst/src        [0]        [1]        [2]        [3]        [4]        [5]        [6]        [7]
+        [0]  1490.911     38.653     38.459     38.673     38.188     38.384     38.136     38.079
+        [1]    38.205   1493.299     38.533     38.648     38.169     38.128     38.171     38.155
+        [2]    38.396     38.238   1489.322     38.461     38.066     38.076     38.042     37.944
+        [3]    38.577     38.349     38.748   1488.331     38.179     38.124     38.094     38.239
+        [4]    38.369     38.000     38.056     38.226   1483.594     37.395     37.983     37.809
+        [5]    38.060     38.185     37.911     38.467     36.090   1483.528     37.224     34.682
+        [6]    38.545     37.879     38.420     38.557     37.179     37.648   1487.144     34.518
+        [7]    38.412     38.098     38.455     38.524     36.642     34.580     36.197   1491.573
+
+bash build_cuda.sh standard/uva_peer_access.cpp
+
+1GB threads uva peer copy test <src_r, dst_w> ... (GBps)
+    dst/src        [0]        [1]        [2]        [3]        [4]        [5]        [6]        [7]
+        [0]  3005.996    749.175    748.657    750.130    748.732    748.640    749.719    744.711
+        [1]   749.401   2991.124    747.723    748.565    748.365    748.065    748.657    749.309
+        [2]   749.409    749.125   2998.877    749.142    747.998    749.100    749.644    748.281
+        [3]   749.929    749.610    749.209   2995.932    748.206    748.165    748.356    747.673
+        [4]   749.644    748.048    749.284    749.594   2986.466    748.958    748.740    749.008
+        [5]   749.209    748.281    748.348    749.384    749.276   2999.011    749.250    748.298
+        [6]   748.140    749.761    748.140    747.939    749.301    749.686   2988.327    749.309
+        [7]   750.449    749.342    749.895    748.807    748.665    748.356    748.699   2990.058
