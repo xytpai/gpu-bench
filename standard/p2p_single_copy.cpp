@@ -52,6 +52,7 @@ float measure_peer_bandwidth(int dst_dev, int src_dev, size_t bytes) {
 
 int main() {
     std::cout << "1GB peer single copy test ... (GBps)\n";
+    enable_p2p();
     int device_count = 0;
     gpuGetDeviceCount(&device_count);
     std::cout << std::right << std::setw(11) << "dst/src";
