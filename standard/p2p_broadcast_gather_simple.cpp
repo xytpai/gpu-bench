@@ -9,28 +9,20 @@ using namespace std;
 
 struct GPUResources {
     size_t buffer_bytes;
-    void *send_buffers;
-    std::vector<void *> recv_buffers;
+    std::vector<void *> buffers;
     std::vector<gpuStream_t> streams;
 };
 
-void allocate_resources(int local, std::vector<GPUResources> &rs, size_t buffer_bytes) {
+void allocate_resources(std::vector<GPUResources> &rs, size_t buffer_bytes) {
     int ngpus = 0;
     gpuGetDeviceCount(&ngpus);
     rs.resize(ngpus);
     for (int g = 0; g < ngpus; ++g) {
         gpuSetDevice(g);
         rs[g].buffer_bytes = buffer_bytes;
-        gpuMalloc(&rs[g].send_buffers, buffer_bytes);
-        gpuMemset(rs[g].send_buffers, 0xA5, buffer_bytes);
-        rs[g].recv_buffers.resize(ngpus);
-        if (g == local) {
-            for (int rg = 0; rg < ngpus; ++rg) {
-                if (rg == local) continue;
-                gpuMalloc(&rs[local].recv_buffers[rg], buffer_bytes);
-            }
-        } else {
-            gpuMalloc(&rs[g].recv_buffers[local], buffer_bytes);
+        rs[g].buffers.resize(ngpus);
+        for (int rg = 0; rg < ngpus; ++rg) {
+            gpuMalloc(&rs[g].buffers[rg], buffer_bytes);
         }
         rs[g].streams.resize(ngpus);
         for (int s = 0; s < ngpus; ++s) {
@@ -39,32 +31,36 @@ void allocate_resources(int local, std::vector<GPUResources> &rs, size_t buffer_
     }
 }
 
-void reset_send_buffers(std::vector<GPUResources> &rs, unsigned char flag) {
+void reset_buffers(std::vector<GPUResources> &rs, unsigned char flag) {
     for (int i = 0; i < rs.size(); ++i) {
         gpuSetDevice(i);
         size_t buffer_bytes = rs[i].buffer_bytes;
-        gpuMemset(rs[i].send_buffers, (flag + i) % 255, 1);
-        gpuMemset((unsigned char *)rs[i].send_buffers + buffer_bytes - 1, (flag + i + 1) % 255, 1);
+        gpuMemset(rs[i].buffers[i], (flag + i) % 255, 1);
+        gpuMemset((unsigned char *)rs[i].buffers[i] + buffer_bytes - 1, (flag + i + 1) % 255, 1);
         gpuDeviceSynchronize();
     }
 }
 
-bool validate_recv_buffers(int local, std::vector<GPUResources> &rs, unsigned char flag) {
+bool validate_buffers(int local, std::vector<GPUResources> &rs, unsigned char flag) {
     auto data = new unsigned char[2];
-    size_t buffer_bytes = rs[local].buffer_bytes;
+    size_t buffer_bytes = rs[0].buffer_bytes;
+    int ngpus = rs.size();
     bool c0, c1;
-    for (int peer = 0; peer < rs.size(); ++peer) {
-        if (peer == local) continue;
-        gpuSetDevice(local);
-        auto ptr = (unsigned char *)rs[local].recv_buffers[peer];
+    gpuSetDevice(local);
+    for (int peer = 0; peer < ngpus; ++peer) {
+        if (local == peer) continue;
+        auto ptr = (unsigned char *)rs[local].buffers[peer];
         gpuMemcpy(data, ptr, 1, gpuMemcpyDeviceToHost);
         gpuMemcpy(data + 1, ptr + buffer_bytes - 1, 1, gpuMemcpyDeviceToHost);
         gpuDeviceSynchronize();
         c0 = data[0] == (flag + peer) % 255;
         c1 = data[1] == (flag + peer + 1) % 255;
         if (!(c0 && c1)) return false;
+    }
+    for (int peer = 0; peer < ngpus; ++peer) {
+        if (local == peer) continue;
         gpuSetDevice(peer);
-        ptr = (unsigned char *)rs[peer].recv_buffers[local];
+        auto ptr = (unsigned char *)rs[peer].buffers[local];
         gpuMemcpy(data, ptr, 1, gpuMemcpyDeviceToHost);
         gpuMemcpy(data + 1, ptr + buffer_bytes - 1, 1, gpuMemcpyDeviceToHost);
         gpuDeviceSynchronize();
@@ -78,25 +74,22 @@ bool validate_recv_buffers(int local, std::vector<GPUResources> &rs, unsigned ch
 
 void run_p2p(int local, std::vector<GPUResources> &rs) {
     int ngpus = rs.size();
+    size_t buffer_bytes = rs[0].buffer_bytes;
     for (int peer = 0; peer < ngpus; ++peer) {
         if (peer == local) continue;
-        size_t buffer_bytes = rs[local].buffer_bytes;
         // local -> peer
         gpuSetDevice(peer);
-        gpuMemcpyPeerAsync(rs[peer].recv_buffers[local], peer,
-                           rs[local].send_buffers, local,
+        gpuMemcpyPeerAsync(rs[peer].buffers[local], peer,
+                           rs[local].buffers[local], local,
                            buffer_bytes, rs[peer].streams[local]);
         // peer -> local
         gpuSetDevice(local);
-        gpuMemcpyPeerAsync(rs[local].recv_buffers[peer], local,
-                           rs[peer].send_buffers, peer,
+        gpuMemcpyPeerAsync(rs[local].buffers[peer], local,
+                           rs[peer].buffers[peer], peer,
                            buffer_bytes, rs[local].streams[peer]);
     }
     for (int g = 0; g < ngpus; ++g) {
         gpuSetDevice(g);
-        for (auto s : rs[g].streams) {
-            gpuStreamSynchronize(s);
-        }
         gpuDeviceSynchronize();
     }
 }
@@ -104,7 +97,7 @@ void run_p2p(int local, std::vector<GPUResources> &rs) {
 std::tuple<float, bool> measure_p2p_bandwidth(int local, size_t buffer_bytes) {
     // std::cout << "allocate resources ... \n";
     std::vector<GPUResources> rs;
-    allocate_resources(local, rs, buffer_bytes);
+    allocate_resources(rs, buffer_bytes);
     int ngpus = rs.size();
 
     // std::cout << "warmup ... \n";
@@ -113,21 +106,20 @@ std::tuple<float, bool> measure_p2p_bandwidth(int local, size_t buffer_bytes) {
     }
 
     // std::cout << "run iters ... \n";
-    reset_send_buffers(rs, 0xA1);
+    reset_buffers(rs, 0xA1);
     auto t0 = std::chrono::high_resolution_clock::now();
     run_p2p(local, rs);
     auto t1 = std::chrono::high_resolution_clock::now();
     double seconds = std::chrono::duration<double>(t1 - t0).count();
     size_t nbytes_total = (ngpus - 1) * 2 * buffer_bytes;
     float gbps = ((double)nbytes_total / seconds) / 1e9;
-    bool valid = validate_recv_buffers(local, rs, 0xA1);
+    bool valid = validate_buffers(local, rs, 0xA1);
 
     // cleanup
     for (int g = 0; g < ngpus; ++g) {
         gpuSetDevice(g);
         for (auto s : rs[g].streams) gpuStreamDestroy(s);
-        gpuFree(rs[g].send_buffers);
-        for (auto p : rs[g].recv_buffers) gpuFree(p);
+        for (auto p : rs[g].buffers) gpuFree(p);
     }
 
     return {gbps, valid};
