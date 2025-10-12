@@ -72,13 +72,14 @@ private:
 
 template <typename func_t>
 std::tuple<double, bool> runbench(func_t fn, int src, int dst, size_t buffer_size, size_t chunk_size, int nstreams, bool bidir) {
+    static unsigned char flag = 0xA3;
     std::vector<GPUResources> rs;
     allocate_resources(rs, buffer_size, chunk_size, nstreams);
     int ngpus = rs.size();
     for (int w = 0; w < 2; ++w) {
         fn(src, dst, rs);
     }
-    reset_gather_flags(rs, 0xA3);
+    reset_gather_flags(rs, flag);
     auto t0 = std::chrono::high_resolution_clock::now();
     fn(src, dst, rs);
     auto t1 = std::chrono::high_resolution_clock::now();
@@ -95,8 +96,9 @@ std::tuple<double, bool> runbench(func_t fn, int src, int dst, size_t buffer_siz
     }
     mask[dst][src] = true;
     if (bidir) mask[src][dst] = true;
-    bool valid = validate_gather_flags(rs, 0xA3, mask);
+    bool valid = validate_gather_flags(rs, flag, mask);
     delete_resources(rs);
+    flag += 1;
     return {gbps, valid};
 }
 
