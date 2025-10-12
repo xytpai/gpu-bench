@@ -121,9 +121,9 @@ int main() {
     }
     {
         std::cout << "======== 1GB p2p all gather ring test ========\n";
-        size_t chunk_size = (size_t)1024 * 1024 * 128;
+        size_t chunk_size = (size_t)1024 * 1024 * 1024 / 1;
         AllGatherRing fn(true);
-        auto [bw, valid, seconds] = runbench(fn, buffer_size, chunk_size, 8);
+        auto [bw, valid, seconds] = runbench(fn, buffer_size, chunk_size, ngpus * 1);
         std::cout << "Total: " << bw << " GBps --- val:" << valid << "\n";
         std::cout << "Latency: " << seconds * 1000000 << " us\n";
         std::cout << "Per GPU: " << bw / ngpus * 2 << " GBps\n";
@@ -139,9 +139,9 @@ int main() {
     }
     {
         std::cout << "======== 1GB uva all gather ring test ========\n";
-        size_t chunk_size = (size_t)1024 * 1024 * 128;
+        size_t chunk_size = (size_t)1024 * 1024 * 1024 / 1;
         AllGatherRing fn(false);
-        auto [bw, valid, seconds] = runbench(fn, buffer_size, chunk_size, 8);
+        auto [bw, valid, seconds] = runbench(fn, buffer_size, chunk_size, ngpus * 1);
         std::cout << "Total: " << bw << " GBps --- val:" << valid << "\n";
         std::cout << "Latency: " << seconds * 1000000 << " us\n";
         std::cout << "Per GPU: " << bw / ngpus * 2 << " GBps\n";
