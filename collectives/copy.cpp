@@ -105,8 +105,8 @@ int main() {
     int device_count = 0;
     gpuGetDeviceCount(&device_count);
     size_t buffer_size = (size_t)1024 * 1024 * 1024;
-    size_t chunk_size = buffer_size;
     int nstreams = 1;
+    size_t chunk_size = buffer_size / nstreams;
     {
         SingleCopy fn(true);
         std::cout << "======== 1GB p2p single dir copy test (GBps) ========\n";
