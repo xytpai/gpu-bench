@@ -78,3 +78,18 @@ void enable_p2p() {
         }
     }
 }
+
+void memcpy_peer_async(void *dst, int dst_dev, void *src, int src_dev, size_t n, gpuStream_t s, size_t chunk_size = 1024 * 1024 * 128) {
+    auto dst_ = (unsigned char *)dst;
+    auto src_ = (unsigned char *)src;
+    int num_chunks = n / chunk_size;
+    for (int i = 0; i < num_chunks; ++i) {
+        gpuMemcpyPeerAsync(dst_, dst_dev, src_, src_dev, chunk_size, s);
+        dst_ += chunk_size;
+        src_ += chunk_size;
+    }
+    size_t remaining = n - chunk_size * num_chunks;
+    if (remaining > 0) {
+        gpuMemcpyPeerAsync(dst_, dst_dev, src_, src_dev, remaining, s);
+    }
+}
