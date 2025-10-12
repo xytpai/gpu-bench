@@ -8,7 +8,6 @@
 // #include "comm.h"
 #include "compare.h"
 #include "device_common.h"
-#include "memory.h"
 
 template <typename DataType>
 void fill_zeros(DataType *ptr, unsigned int len) {

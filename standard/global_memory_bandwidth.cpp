@@ -5,28 +5,7 @@
 using namespace std;
 
 template <typename T, int vec_size, int loops>
-__global__ void threads_copy_kernel(const T *in, T *out, const size_t n) {
-    const int block_work_size = loops * blockDim.x * vec_size;
-    auto index = blockIdx.x * block_work_size + threadIdx.x * vec_size;
-    auto remaining = n - index;
-#pragma unroll
-    for (int i = 0; i < loops; ++i) {
-        if (remaining < vec_size) {
-            for (auto i = index; i < n; i++) {
-                out[i] = in[i];
-            }
-        } else {
-            using vec_t = aligned_array<T, vec_size>;
-            auto in_vec = reinterpret_cast<vec_t *>(const_cast<T *>(&in[index]));
-            auto out_vec = reinterpret_cast<vec_t *>(&out[index]);
-            *out_vec = *in_vec;
-        }
-        index += blockDim.x * vec_size;
-    }
-}
-
-template <typename T, int vec_size, int loops>
-float threads_copy(const T *in, T *out, size_t n) {
+float threads_copy_(const T *in, T *out, size_t n) {
     const int block_size = 256;
     const int block_work_size = loops * block_size * vec_size;
 
@@ -63,7 +42,7 @@ void test_threads_copy(size_t n) {
 
     float timems;
     for (int i = 0; i < 2; i++)
-        timems = threads_copy<scalar_t, vec_size, loops>(in_gpu, out_gpu, n);
+        timems = threads_copy_<scalar_t, vec_size, loops>(in_gpu, out_gpu, n);
     std::cout << "timems:" << timems << " throughput:";
 
     float total_GBytes = (n + n) * sizeof(scalar_t) / 1000.0 / 1000.0;
