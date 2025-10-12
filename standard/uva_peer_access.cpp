@@ -74,6 +74,7 @@ float measure_uva_access(int local, int peer, const size_t n, bool val) {
 
     float timems;
     int iters = 2;
+    gpuSetDevice(local); // peer -> local; local += 1; local -> peer
     for (int i = 0; i < iters; i++)
         timems = threads_incre<float, 4, 1>(local_ptr, peer_ptr, n);
 
