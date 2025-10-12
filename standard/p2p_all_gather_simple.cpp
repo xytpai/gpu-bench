@@ -122,7 +122,7 @@ std::tuple<float, bool> measure_p2p_bandwidth(size_t buffer_bytes) {
 }
 
 int main() {
-    std::cout << "1GB p2p allgather simple test ... \n";
+    std::cout << "1GB p2p all gather simple test ... \n";
     enable_p2p();
     int ngpus = 0;
     gpuGetDeviceCount(&ngpus);
