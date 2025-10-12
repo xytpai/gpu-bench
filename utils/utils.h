@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <time.h>
 
+#include "collectives.h"
 // #include "comm.h"
 #include "compare.h"
 #include "device_common.h"

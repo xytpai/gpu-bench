@@ -61,35 +61,3 @@
 #define gpuStreamSynchronize cudaStreamSynchronize
 
 #endif
-
-#include <cassert>
-
-void enable_p2p() {
-    int ngpus = 0;
-    gpuGetDeviceCount(&ngpus);
-    for (int local = 0; local < ngpus; ++local) {
-        gpuSetDevice(local);
-        for (int peer = 0; peer < ngpus; ++peer) {
-            if (local == peer) continue;
-            int can = 0;
-            gpuDeviceCanAccessPeer(&can, local, peer);
-            assert(can);
-            gpuDeviceEnablePeerAccess(peer, 0);
-        }
-    }
-}
-
-void memcpy_peer_async(void *dst, int dst_dev, void *src, int src_dev, size_t n, gpuStream_t s, size_t chunk_size = 1024 * 1024 * 128) {
-    auto dst_ = (unsigned char *)dst;
-    auto src_ = (unsigned char *)src;
-    int num_chunks = n / chunk_size;
-    for (int i = 0; i < num_chunks; ++i) {
-        gpuMemcpyPeerAsync(dst_, dst_dev, src_, src_dev, chunk_size, s);
-        dst_ += chunk_size;
-        src_ += chunk_size;
-    }
-    size_t remaining = n - chunk_size * num_chunks;
-    if (remaining > 0) {
-        gpuMemcpyPeerAsync(dst_, dst_dev, src_, src_dev, remaining, s);
-    }
-}
