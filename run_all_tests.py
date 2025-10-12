@@ -11,7 +11,7 @@ build_tool_map = {
     'cu': 'build_cuda.sh',
 }
 sources = sorted(glob.glob(f"standard/*.cpp"))
-
+sources += sorted(glob.glob(f"collective/*.cpp"))
 
 model = sys.argv[1].strip()
 build_tool = build_tool_map[model]
