@@ -9,8 +9,7 @@ using namespace std;
 
 struct GPUResources {
     size_t buffer_bytes;
-    void *send_buffers;
-    std::vector<void *> recv_buffers;
+    std::vector<void *> buffers;
     std::vector<gpuStream_t> streams;
 };
 
@@ -21,12 +20,9 @@ void allocate_resources(std::vector<GPUResources> &rs, size_t buffer_bytes) {
     for (int g = 0; g < ngpus; ++g) {
         gpuSetDevice(g);
         rs[g].buffer_bytes = buffer_bytes;
-        gpuMalloc(&rs[g].send_buffers, buffer_bytes);
-        gpuMemset(rs[g].send_buffers, 0xA5, buffer_bytes);
-        rs[g].recv_buffers.resize(ngpus);
+        rs[g].buffers.resize(ngpus);
         for (int rg = 0; rg < ngpus; ++rg) {
-            if (rg == g) continue;
-            gpuMalloc(&rs[g].recv_buffers[rg], buffer_bytes);
+            gpuMalloc(&rs[g].buffers[rg], buffer_bytes);
         }
         rs[g].streams.resize(ngpus);
         for (int s = 0; s < ngpus; ++s) {
@@ -35,26 +31,25 @@ void allocate_resources(std::vector<GPUResources> &rs, size_t buffer_bytes) {
     }
 }
 
-void reset_send_buffers(std::vector<GPUResources> &rs, unsigned char flag) {
+void reset_buffers(std::vector<GPUResources> &rs, unsigned char flag) {
     for (int i = 0; i < rs.size(); ++i) {
         gpuSetDevice(i);
         size_t buffer_bytes = rs[i].buffer_bytes;
-        gpuMemset(rs[i].send_buffers, (flag + i) % 255, 1);
-        gpuMemset((unsigned char *)rs[i].send_buffers + buffer_bytes - 1, (flag + i + 1) % 255, 1);
+        gpuMemset(rs[i].buffers[i], (flag + i) % 255, 1);
+        gpuMemset((unsigned char *)rs[i].buffers[i] + buffer_bytes - 1, (flag + i + 1) % 255, 1);
         gpuDeviceSynchronize();
     }
 }
 
-bool validate_recv_buffers(std::vector<GPUResources> &rs, unsigned char flag) {
+bool validate_buffers(std::vector<GPUResources> &rs, unsigned char flag) {
     auto data = new unsigned char[2];
     size_t buffer_bytes = rs[0].buffer_bytes;
     int ngpus = rs.size();
     bool c0, c1;
     for (int local = 0; local < ngpus; ++local) {
+        gpuSetDevice(local);
         for (int peer = 0; peer < ngpus; ++peer) {
-            if (peer == local) continue;
-            gpuSetDevice(local);
-            auto ptr = (unsigned char *)rs[local].recv_buffers[peer];
+            auto ptr = (unsigned char *)rs[local].buffers[peer];
             gpuMemcpy(data, ptr, 1, gpuMemcpyDeviceToHost);
             gpuMemcpy(data + 1, ptr + buffer_bytes - 1, 1, gpuMemcpyDeviceToHost);
             gpuDeviceSynchronize();
@@ -69,27 +64,30 @@ bool validate_recv_buffers(std::vector<GPUResources> &rs, unsigned char flag) {
 
 void run_p2p(std::vector<GPUResources> &rs) {
     int ngpus = rs.size();
-    for (int local = 0; local < ngpus; ++local) {
-        for (int peer = 0; peer < ngpus; ++peer) {
-            if (peer == local) continue;
-            size_t buffer_bytes = rs[local].buffer_bytes;
-            // peer -> local
-            gpuSetDevice(local);
-            gpuMemcpyPeerAsync(rs[local].recv_buffers[peer], local,
-                               rs[peer].send_buffers, peer,
-                               buffer_bytes, rs[local].streams[peer]);
-        }
+    std::vector<int> counters(ngpus);
+    for (int i = 0; i < ngpus; ++i) {
+        counters[i] = i;
     }
-    for (int g = 0; g < ngpus; ++g) {
-        gpuSetDevice(g);
-        for (auto s : rs[g].streams) {
-            gpuStreamSynchronize(s);
+    size_t buffer_bytes = rs[0].buffer_bytes;
+    for (int ct = 1; ct < ngpus; ++ct) {
+        for (int sender = 0; sender < ngpus; ++sender) {
+            int recver = (sender + 1) % ngpus;
+            int idx = counters[sender];
+            gpuSetDevice(recver);
+            gpuMemcpyPeerAsync(rs[recver].buffers[idx], recver,
+                               rs[sender].buffers[idx], sender,
+                               buffer_bytes, rs[recver].streams[sender]);
+            idx = (idx + ngpus - 1) % ngpus;
+            counters[sender] = idx;
         }
-        gpuDeviceSynchronize();
+        for (int g = 0; g < ngpus; ++g) {
+            gpuSetDevice(g);
+            gpuDeviceSynchronize();
+        }
     }
 }
 
-std::tuple<float, bool> measure_p2p_bandwidth(size_t buffer_bytes) {
+std::tuple<float, bool, double> measure_p2p_bandwidth(size_t buffer_bytes) {
     // std::cout << "allocate resources ... \n";
     std::vector<GPUResources> rs;
     allocate_resources(rs, buffer_bytes);
@@ -101,33 +99,33 @@ std::tuple<float, bool> measure_p2p_bandwidth(size_t buffer_bytes) {
     }
 
     // std::cout << "run iters ... \n";
-    reset_send_buffers(rs, 0xA1);
+    reset_buffers(rs, 0xA3);
     auto t0 = std::chrono::high_resolution_clock::now();
     run_p2p(rs);
     auto t1 = std::chrono::high_resolution_clock::now();
     double seconds = std::chrono::duration<double>(t1 - t0).count();
-    size_t nbytes_total = (ngpus * ngpus - ngpus) * buffer_bytes;
+    size_t nbytes_total = (ngpus - 1) * ngpus * buffer_bytes;
     float gbps = ((double)nbytes_total / seconds) / 1e9;
-    bool valid = validate_recv_buffers(rs, 0xA1);
+    bool valid = validate_buffers(rs, 0xA3);
 
     // cleanup
     for (int g = 0; g < ngpus; ++g) {
         gpuSetDevice(g);
         for (auto s : rs[g].streams) gpuStreamDestroy(s);
-        gpuFree(rs[g].send_buffers);
-        for (auto p : rs[g].recv_buffers) gpuFree(p);
+        for (auto p : rs[g].buffers) gpuFree(p);
     }
 
-    return {gbps, valid};
+    return {gbps, valid, seconds};
 }
 
 int main() {
-    std::cout << "1GB p2p all gather simple test ... \n";
+    std::cout << "1GB p2p all gather ring test ... \n";
     enable_p2p();
     int ngpus = 0;
     gpuGetDeviceCount(&ngpus);
     size_t buffer_bytes = (size_t)1024 * 1024 * 1024;
-    auto [bw, valid] = measure_p2p_bandwidth(buffer_bytes);
+    auto [bw, valid, seconds] = measure_p2p_bandwidth(buffer_bytes);
     std::cout << "Total: " << bw << " GBps --- val:" << valid << "\n";
+    std::cout << "Latency: " << seconds * 1000000 << " us\n";
     std::cout << "Per GPU: " << bw / ngpus * 2 << " GBps\n";
 }
