@@ -186,9 +186,9 @@ struct SyncComm {
 
     int *counter_ptr;
     int *flag_ptr;
-    void *current_comm_bufs[16];
-    void *next_comm_bufs[16];
-    void *barrier_flags[16];
+    void *current_comm_bufs[8];
+    void *next_comm_bufs[8];
+    void *barrier_flags[8];
     int flag_value;
     int nranks;
 };
