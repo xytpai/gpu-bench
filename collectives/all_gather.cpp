@@ -206,7 +206,7 @@ int main() {
         std::cout << "Per GPU: " << bw / ngpus * 2 << " GBps\n";
     }
     {
-        std::cout << "======== 1GB barrier all gather direct test ========\n";
+        std::cout << "======== 1GB barrier all gather ring test ========\n";
         size_t chunk_size = (size_t)1024 * 1024 * 1024;
         AllGatherRingBarrier fn;
         auto [bw, valid, seconds] = runbench(fn, buffer_size, chunk_size, ngpus);
