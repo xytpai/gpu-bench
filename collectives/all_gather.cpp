@@ -78,35 +78,35 @@ private:
     bool p2p_;
 };
 
-template <int NRanks, int vec_size = 4>
-__global__ void ring_all_gather_kernel(void **workspace, int rank, size_t buffer_size) {
-    SyncComm<NRanks> comm(workspace);
-    Barrier<NRanks> barrier(rank, comm);
+template <int vec_size = 4>
+__global__ void ring_all_gather_kernel(void **workspace, int rank, int nranks, size_t buffer_size) {
     const int block_work_size = blockDim.x * vec_size;
     int counter = rank;
-    for (int ct = 1; ct < NRanks; ++ct) {
+    SyncComm comm(workspace, nranks);
+    Barrier barrier(rank, comm);
+    for (int ct = 1; ct < nranks; ++ct) {
         size_t index = blockIdx.x * block_work_size + threadIdx.x * vec_size;
         unsigned char *in = (unsigned char *)comm.current_comm_bufs[counter];
         unsigned char *out = (unsigned char *)comm.next_comm_bufs[counter];
-        while (true) {
-            auto remaining = buffer_size - index;
-            if (remaining < vec_size) {
-                for (auto i = index; i < buffer_size; i++) {
-                    out[i] = in[i];
-                }
-                break;
-            } else {
-                using vec_t = aligned_array<unsigned char, vec_size>;
-                auto in_vec = reinterpret_cast<vec_t *>(const_cast<unsigned char *>(&in[index]));
-                auto out_vec = reinterpret_cast<vec_t *>(&out[index]);
-                *out_vec = *in_vec;
-            }
-            index += blockDim.x * vec_size;
-        }
-        counter = (counter + NRanks - 1) % NRanks;
+        // while (true) {
+        //     auto remaining = buffer_size - index;
+        //     if (remaining < vec_size) {
+        //         for (auto i = index; i < buffer_size; i++) {
+        //             out[i] = in[i];
+        //         }
+        //         break;
+        //     } else {
+        //         using vec_t = aligned_array<unsigned char, vec_size>;
+        //         auto in_vec = reinterpret_cast<vec_t *>(const_cast<unsigned char *>(&in[index]));
+        //         auto out_vec = reinterpret_cast<vec_t *>(&out[index]);
+        //         *out_vec = *in_vec;
+        //     }
+        //     index += blockDim.x * vec_size;
+        // }
+        counter = (counter + nranks - 1) % nranks;
         barrier.sync();
-        comm.update(barrier.m_flag_value);
     }
+    comm.update(barrier.m_flag_value);
 }
 
 class AllGatherRingBarrier {
@@ -116,11 +116,12 @@ public:
         int buffer_size = rs[0].buffer_size;
         dim3 threadsPerBlock(256);
         dim3 numBlocks(256);
+        std::vector<GPUWorkSpace> workspaces(nranks);
         for (int rank = 0; rank < nranks; ++rank) {
-            GPUWorkSpace work(rs, rank);
-            auto s = rs[(rank + 1) % nranks].streams[0];
-            ring_all_gather_kernel<8><<<numBlocks, threadsPerBlock, 0, s>>>(
-                work.workspace(), rank, buffer_size);
+            workspaces[rank].init(rs, rank);
+            auto s = rs[rank].streams[0];
+            ring_all_gather_kernel<<<numBlocks, threadsPerBlock, 0, s>>>(
+                workspaces[rank].workspace(), rank, nranks, buffer_size);
         }
         for (int g = 0; g < nranks; ++g) {
             gpuSetDevice(g);
@@ -158,6 +159,7 @@ std::tuple<double, bool, double> runbench(func_t fn, size_t buffer_size, size_t 
 
 int main() {
     int ngpus = enable_p2p();
+    std::cout << "ngpus: " << ngpus << "\n";
     size_t buffer_size = (size_t)1024 * 1024 * 1024;
     {
         std::cout << "======== 1GB p2p all gather direct test ========\n";
@@ -195,13 +197,13 @@ int main() {
         std::cout << "Latency: " << seconds * 1000000 << " us\n";
         std::cout << "Per GPU: " << bw / ngpus * 2 << " GBps\n";
     }
-    // {
-    //     std::cout << "======== 1GB barrier all gather direct test ========\n";
-    //     size_t chunk_size = (size_t)1024 * 1024 * 1024;
-    //     AllGatherRingBarrier fn;
-    //     auto [bw, valid, seconds] = runbench(fn, buffer_size, chunk_size, ngpus);
-    //     std::cout << "Total: " << bw << " GBps --- val:" << valid << "\n";
-    //     std::cout << "Latency: " << seconds * 1000000 << " us\n";
-    //     std::cout << "Per GPU: " << bw / ngpus * 2 << " GBps\n";
-    // }
+    {
+        std::cout << "======== 1GB barrier all gather direct test ========\n";
+        size_t chunk_size = (size_t)1024 * 1024 * 1024;
+        AllGatherRingBarrier fn;
+        auto [bw, valid, seconds] = runbench(fn, buffer_size, chunk_size, ngpus);
+        std::cout << "Total: " << bw << " GBps --- val:" << valid << "\n";
+        std::cout << "Latency: " << seconds * 1000000 << " us\n";
+        std::cout << "Per GPU: " << bw / ngpus * 2 << " GBps\n";
+    }
 }
