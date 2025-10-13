@@ -62,7 +62,7 @@ void allocate_resources(std::vector<GPUResources> &rs, size_t buffer_size, size_
             gpuStreamCreate(&rs[rank].streams[s]);
         }
         // barrier
-        gpuMalloc(&rs[rank].barrier_flags, nblocks_per_gpu * sizeof(int));
+        gpuMalloc(&rs[rank].barrier_flags, nblocks_per_gpu * ngpus * sizeof(int));
         gpuMalloc(&rs[rank].counter, sizeof(int));
         gpuMalloc(&rs[rank].flag, sizeof(int));
         rs[rank].nblocks = nblocks_per_gpu;
@@ -141,7 +141,7 @@ public:
             workspace_[nranks + peer] = (void *)rs[peer].barrier_flags;
             workspace_[2 * nranks + peer] = rs[next_rank].buffers[peer][0];
         }
-        gpuMemset(r.barrier_flags, 0, r.nblocks * rank * sizeof(int));
+        gpuMemset(r.barrier_flags, 0, r.nblocks * nranks * sizeof(int));
         gpuMemset(r.counter, 0, sizeof(int));
         gpuMemset(r.flag, 0, sizeof(int));
         workspace_[nranks * 3 + 0] = (void *)r.counter;
