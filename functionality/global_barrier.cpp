@@ -40,7 +40,7 @@ __global__ __launch_bounds__(256, 4) void global_barrier_test_kernel(int *counte
     }
 }
 
-void global_barrier_test(int nblocks = 256) {
+void global_barrier_test(int nblocks = 128) {
     int *counter, *nums;
     gpuMalloc(&counter, 1 * sizeof(int));
     gpuMemset(counter, 0, 1 * sizeof(int));
