@@ -135,17 +135,19 @@ public:
         int nranks = rs.size();
         auto &r = rs[rank];
         int next_rank = (rank + 1) % nranks;
-        gpuMalloc(&workspace_, (nranks * 3 + 2) * sizeof(void *));
-        for (int peer = 0; peer < nranks; ++peer) {
-            workspace_[peer] = r.buffers[peer][0];
-            workspace_[nranks + peer] = (void *)rs[peer].barrier_flags;
-            workspace_[2 * nranks + peer] = rs[next_rank].buffers[peer][0];
-        }
         gpuMemset(r.barrier_flags, 0, r.nblocks * nranks * sizeof(int));
         gpuMemset(r.counter, 0, sizeof(int));
         gpuMemset(r.flag, 0, sizeof(int));
-        workspace_[nranks * 3 + 0] = (void *)r.counter;
-        workspace_[nranks * 3 + 1] = (void *)r.flag;
+        std::vector<void *> workspace(nranks * 3 + 2);
+        for (int peer = 0; peer < nranks; ++peer) {
+            workspace[peer] = r.buffers[peer][0];
+            workspace[nranks + peer] = (void *)rs[peer].barrier_flags;
+            workspace[2 * nranks + peer] = rs[next_rank].buffers[peer][0];
+        }
+        workspace[nranks * 3 + 0] = (void *)r.counter;
+        workspace[nranks * 3 + 1] = (void *)r.flag;
+        gpuMalloc(&workspace_, (nranks * 3 + 2) * sizeof(void *));
+        gpuMemcpy(workspace_, workspace.data(), workspace.size() * sizeof(void *), gpuMemcpyHostToDevice);
     }
     ~GPUWorkSpace() {
         gpuFree(workspace_);
