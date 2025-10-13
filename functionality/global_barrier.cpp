@@ -7,7 +7,6 @@ using namespace std;
 __device__ void global_barrier(int *counter) {
     __shared__ bool is_last_block;
     __threadfence();
-    __syncthreads();
     if (threadIdx.x == 0) {
         int prev = atomicAdd(counter, 1);
         is_last_block = (prev == gridDim.x - 1);
