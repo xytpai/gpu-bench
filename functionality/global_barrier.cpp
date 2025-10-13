@@ -6,6 +6,7 @@ using namespace std;
 
 __device__ void global_barrier(int *counter) {
     __shared__ bool is_last_block;
+    __syncthreads();
     __threadfence();
     if (threadIdx.x == 0) {
         int prev = atomicAdd(counter, 1);
@@ -28,19 +29,14 @@ __global__ __launch_bounds__(256, 4) void global_barrier_test_kernel(int *counte
     }
     global_barrier(counter);
     for (int offset = gridDim.x / 2; offset > 0; offset /= 2) {
-        int val;
         if (tid == 0 && bid < offset) {
-            val = nums[bid + offset];
-        }
-        global_barrier(counter);
-        if (tid == 0 && bid < offset) {
-            nums[bid] += val;
+            nums[bid] += nums[bid + offset];
         }
         global_barrier(counter);
     }
 }
 
-void global_barrier_test(int nblocks = 128) {
+void global_barrier_test(int nblocks = 256) {
     int *counter, *nums;
     gpuMalloc(&counter, 1 * sizeof(int));
     gpuMemset(counter, 0, 1 * sizeof(int));
