@@ -14,7 +14,6 @@ __device__ void global_barrier(int *counter) {
     }
     __syncthreads();
     if (is_last_block) {
-        __threadfence();
         *counter = 0;
     } else {
         while (*reinterpret_cast<int volatile *>(counter) != 0) {}
@@ -22,7 +21,7 @@ __device__ void global_barrier(int *counter) {
     __syncthreads();
 }
 
-__global__ void global_barrier_test_kernel(int *counter, int *nums) {
+__global__ __launch_bounds__(256, 4) void global_barrier_test_kernel(int *counter, int *nums) {
     int tid = threadIdx.x;
     int bid = blockIdx.x;
     if (tid == 0) {
