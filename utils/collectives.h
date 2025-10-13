@@ -141,7 +141,7 @@ public:
             workspace_[nranks + peer] = (void *)rs[peer].barrier_flags;
             workspace_[2 * nranks + peer] = rs[next_rank].buffers[peer][0];
         }
-        gpuMemset(r.barrier_flags, 0, r.nblocks * sizeof(int));
+        gpuMemset(r.barrier_flags, 0, r.nblocks * rank * sizeof(int));
         gpuMemset(r.counter, 0, sizeof(int));
         gpuMemset(r.flag, 0, sizeof(int));
         workspace_[nranks * 3 + 0] = (void *)r.counter;
