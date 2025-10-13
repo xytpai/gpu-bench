@@ -10,47 +10,57 @@ __device__ void global_barrier(int *counter) {
     if (threadIdx.x == 0) {
         int prev = atomicAdd(counter, 1);
         is_last_block = (prev == gridDim.x - 1);
+        __threadfence();
     }
     __syncthreads();
     if (is_last_block) {
         *counter = 0;
+        __threadfence();
     } else {
         while (*reinterpret_cast<int volatile *>(counter) != 0) {}
     }
     __syncthreads();
 }
 
-__global__ void global_barrier_test_kernel(int *counter) {
-    if (threadIdx.x == 0) {
-        printf("[1] from block %d\n", blockIdx.x);
+__global__ void global_barrier_test_kernel(int *counter, int *nums) {
+    int tid = threadIdx.x;
+    int bid = blockIdx.x;
+    if (tid == 0) {
+        nums[bid] = 1;
     }
     global_barrier(counter);
-    if (threadIdx.x == 0) {
-        printf("[2] from block %d\n", blockIdx.x);
+    for (int offset = gridDim.x / 2; offset > 0; offset /= 2) {
+        int val;
+        if (tid == 0 && bid < offset) {
+            val = nums[bid + offset];
+        }
+        global_barrier(counter);
+        if (tid == 0 && bid < offset) {
+            nums[bid] += val;
+        }
+        global_barrier(counter);
     }
-    global_barrier(counter);
-    if (threadIdx.x == 0) {
-        printf("[3] from block %d\n", blockIdx.x);
-    }
-    global_barrier(counter);
-    if (threadIdx.x == 0) {
-        printf("[4] from block %d\n", blockIdx.x);
-    }
-    global_barrier(counter);
 }
 
-void global_barrier_test() {
-    int *counter;
+void global_barrier_test(int nblocks = 128) {
+    int *counter, *nums;
     gpuMalloc(&counter, 1 * sizeof(int));
     gpuMemset(counter, 0, 1 * sizeof(int));
+    gpuMalloc(&nums, nblocks * sizeof(int));
     dim3 threadsPerBlock(256);
-    dim3 numBlocks(64);
-    global_barrier_test_kernel<<<numBlocks, threadsPerBlock>>>(counter);
+    dim3 numBlocks(nblocks);
+    global_barrier_test_kernel<<<numBlocks, threadsPerBlock>>>(counter, nums);
     gpuDeviceSynchronize();
+    int nums_;
+    gpuMemcpy(&nums_, nums, 1 * sizeof(int), gpuMemcpyDeviceToHost);
+    std::cout << nums_ << "\n";
+    assert(nums_ == nblocks);
     gpuFree(counter);
+    gpuFree(nums);
 }
 
 int main() {
-    std::cout << "global barrier test ... ";
+    std::cout << "global barrier test ... \n";
     global_barrier_test();
+    std::cout << "ok\n";
 }
