@@ -78,21 +78,62 @@ private:
     bool p2p_;
 };
 
+template <int NRanks, int vec_size = 4>
+__global__ void ring_all_gather_kernel(void **workspace, int rank, size_t buffer_size) {
+    SyncComm<NRanks> comm(workspace);
+    Barrier<NRanks> barrier(rank, comm);
+    const int block_work_size = blockDim.x * vec_size;
+    int counter = rank;
+    for (int ct = 1; ct < NRanks; ++ct) {
+        size_t index = blockIdx.x * block_work_size + threadIdx.x * vec_size;
+        unsigned char *in = (unsigned char *)comm.current_comm_bufs[counter];
+        unsigned char *out = (unsigned char *)comm.next_comm_bufs[counter];
+        while (true) {
+            auto remaining = buffer_size - index;
+            if (remaining < vec_size) {
+                for (auto i = index; i < buffer_size; i++) {
+                    out[i] = in[i];
+                }
+                break;
+            } else {
+                using vec_t = aligned_array<unsigned char, vec_size>;
+                auto in_vec = reinterpret_cast<vec_t *>(const_cast<unsigned char *>(&in[index]));
+                auto out_vec = reinterpret_cast<vec_t *>(&out[index]);
+                *out_vec = *in_vec;
+            }
+            index += blockDim.x * vec_size;
+        }
+        counter = (counter + NRanks - 1) % NRanks;
+        barrier.sync();
+        comm.update(barrier.m_flag_value);
+    }
+}
+
+class AllGatherRingBarrier {
+public:
+    void operator()(std::vector<GPUResources> &rs) {
+        int nranks = rs.size();
+        int buffer_size = rs[0].buffer_size;
+        dim3 threadsPerBlock(256);
+        dim3 numBlocks(256);
+        for (int rank = 0; rank < nranks; ++rank) {
+            GPUWorkSpace work(rs, rank);
+            auto s = rs[(rank + 1) % nranks].streams[0];
+            ring_all_gather_kernel<8><<<numBlocks, threadsPerBlock, 0, s>>>(
+                work.workspace(), rank, buffer_size);
+        }
+        for (int g = 0; g < nranks; ++g) {
+            gpuSetDevice(g);
+            gpuDeviceSynchronize();
+        }
+    }
+};
+
 template <typename func_t>
 std::tuple<double, bool, double> runbench(func_t fn, size_t buffer_size, size_t chunk_size, int nstreams) {
     std::vector<GPUResources> rs;
     allocate_resources(rs, buffer_size, chunk_size, nstreams);
     int ngpus = rs.size();
-    for (int w = 0; w < 2; ++w) {
-        fn(rs);
-    }
-    reset_gather_flags(rs, 0xA3);
-    auto t0 = std::chrono::high_resolution_clock::now();
-    fn(rs);
-    auto t1 = std::chrono::high_resolution_clock::now();
-    double seconds = std::chrono::duration<double>(t1 - t0).count();
-    size_t nbytes_total = (ngpus - 1) * ngpus * buffer_size;
-    double gbps = ((double)nbytes_total / seconds) / 1e9;
     std::vector<std::vector<bool>> mask(ngpus);
     for (int local = 0; local < ngpus; ++local) {
         mask[local].resize(ngpus);
@@ -100,7 +141,17 @@ std::tuple<double, bool, double> runbench(func_t fn, size_t buffer_size, size_t 
             mask[local][peer] = true;
         }
     }
+    for (int w = 0; w < 2; ++w) {
+        fn(rs);
+    }
+    reset_gather_flags(rs, 0xA3);
+    auto t0 = std::chrono::high_resolution_clock::now();
+    fn(rs);
+    auto t1 = std::chrono::high_resolution_clock::now();
     bool valid = validate_gather_flags(rs, 0xA3, mask);
+    double seconds = std::chrono::duration<double>(t1 - t0).count();
+    size_t nbytes_total = (ngpus - 1) * ngpus * buffer_size;
+    double gbps = ((double)nbytes_total / seconds) / 1e9;
     delete_resources(rs);
     return {gbps, valid, seconds};
 }
@@ -144,4 +195,13 @@ int main() {
         std::cout << "Latency: " << seconds * 1000000 << " us\n";
         std::cout << "Per GPU: " << bw / ngpus * 2 << " GBps\n";
     }
+    // {
+    //     std::cout << "======== 1GB barrier all gather direct test ========\n";
+    //     size_t chunk_size = (size_t)1024 * 1024 * 1024;
+    //     AllGatherRingBarrier fn;
+    //     auto [bw, valid, seconds] = runbench(fn, buffer_size, chunk_size, ngpus);
+    //     std::cout << "Total: " << bw << " GBps --- val:" << valid << "\n";
+    //     std::cout << "Latency: " << seconds * 1000000 << " us\n";
+    //     std::cout << "Per GPU: " << bw / ngpus * 2 << " GBps\n";
+    // }
 }

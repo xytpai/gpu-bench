@@ -30,14 +30,16 @@ struct GPUResources {
     std::vector<std::vector<unsigned char *>> buffers;
     std::vector<gpuStream_t> streams;
     // barrier
-    std::vector<int *> barrier_flags;
+    int nblocks;
+    int *barrier_flags;
     int *counter;
     int *flag;
 };
 
 #define DEFAULT_P2P_CHUNK_SIZE (1024 * 1024 * 32)
+#define DEFAULT_NCTAS 256
 
-void allocate_resources(std::vector<GPUResources> &rs, size_t buffer_size, size_t chunk_size, int streams_per_gpu, int nblocks_per_gpu = 256) {
+void allocate_resources(std::vector<GPUResources> &rs, size_t buffer_size, size_t chunk_size, int streams_per_gpu, int nblocks_per_gpu = DEFAULT_NCTAS) {
     int ngpus = 0;
     gpuGetDeviceCount(&ngpus);
     rs.resize(ngpus);
@@ -60,12 +62,10 @@ void allocate_resources(std::vector<GPUResources> &rs, size_t buffer_size, size_
             gpuStreamCreate(&rs[rank].streams[s]);
         }
         // barrier
-        rs[rank].barrier_flags.resize(ngpus);
-        for (int peer = 0; peer < ngpus; ++peer) {
-            gpuMalloc(&rs[rank].barrier_flags[peer], ngpus * nblocks_per_gpu * sizeof(int));
-        }
+        gpuMalloc(&rs[rank].barrier_flags, nblocks_per_gpu * sizeof(int));
         gpuMalloc(&rs[rank].counter, sizeof(int));
         gpuMalloc(&rs[rank].flag, sizeof(int));
+        rs[rank].nblocks = nblocks_per_gpu;
     }
 }
 
@@ -76,8 +76,8 @@ void delete_resources(std::vector<GPUResources> &rs) {
         for (auto s : rs[rank].streams) gpuStreamDestroy(s);
         for (int peer = 0; peer < ngpus; ++peer) {
             for (auto p : rs[rank].buffers[peer]) gpuFree(p);
-            gpuFree(rs[rank].barrier_flags[peer]);
         }
+        gpuFree(rs[rank].barrier_flags);
         gpuFree(rs[rank].counter);
         gpuFree(rs[rank].flag);
     }
@@ -124,6 +124,37 @@ bool validate_gather_flags(std::vector<GPUResources> &rs, unsigned char flag, st
     return true;
 }
 
+class GPUWorkSpace {
+public:
+    GPUWorkSpace(std::vector<GPUResources> &rs, int rank) {
+        assert(rs[0].chunk_size == rs[0].buffer_size);
+        gpuSetDevice(rank);
+        int nranks = rs.size();
+        auto &r = rs[rank];
+        int next_rank = (rank + 1) % nranks;
+        gpuMalloc(&workspace_, (nranks * 3 + 2) * sizeof(void *));
+        for (int peer = 0; peer < nranks; ++peer) {
+            workspace_[peer] = r.buffers[peer][0];
+            workspace_[nranks + peer] = (void *)rs[peer].barrier_flags;
+            workspace_[2 * nranks + peer] = rs[next_rank].buffers[peer][0];
+        }
+        gpuMemset(r.barrier_flags, 0, r.nblocks * sizeof(int));
+        gpuMemset(r.counter, 0, sizeof(int));
+        gpuMemset(r.flag, 0, sizeof(int));
+        workspace_[nranks * 3 + 0] = (void *)r.counter;
+        workspace_[nranks * 3 + 1] = (void *)r.flag;
+    }
+    ~GPUWorkSpace() {
+        gpuFree(workspace_);
+    }
+    void **workspace() const {
+        return workspace_;
+    }
+
+private:
+    void **workspace_;
+};
+
 template <int NRanks>
 struct SyncComm {
     __device__ __forceinline__ SyncComm(void **workspace) {
@@ -131,8 +162,9 @@ struct SyncComm {
         flag_ptr = &reinterpret_cast<int *>(workspace[NRanks * 3])[1];
         flag_value = *flag_ptr;
         for (int r = 0; r < NRanks; ++r) {
-            comm_bufs[r] = workspace[r];
+            current_comm_bufs[r] = workspace[r];
             barrier_flags[r] = workspace[NRanks + r];
+            next_comm_bufs[r] = workspace[2 * NRanks + r];
         }
         __syncthreads();
         if (threadIdx.x == 0) {
@@ -151,7 +183,8 @@ struct SyncComm {
 
     int *counter_ptr;
     int *flag_ptr;
-    void *comm_bufs[NRanks];
+    void *current_comm_bufs[NRanks];
+    void *next_comm_bufs[NRanks];
     void *barrier_flags[NRanks];
     int flag_value;
 };
@@ -170,7 +203,7 @@ public:
     }
 
     __device__ __forceinline__ void sync() {
-        constexpr int kBarrierFlagCount = 256;
+        constexpr int kBarrierFlagCount = DEFAULT_NCTAS;
         __syncthreads();
         if (threadIdx.x < NRanks) {
             m_flag_value = next_flag(m_flag_value);

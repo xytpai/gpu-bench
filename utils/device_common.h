@@ -71,9 +71,9 @@ template <typename T, int vec_size, int loops>
 __global__ void threads_copy_kernel(const T *in, T *out, const size_t n) {
     const int block_work_size = loops * blockDim.x * vec_size;
     auto index = blockIdx.x * block_work_size + threadIdx.x * vec_size;
-    auto remaining = n - index;
 #pragma unroll
     for (int i = 0; i < loops; ++i) {
+        auto remaining = n - index;
         if (remaining < vec_size) {
             for (auto i = index; i < n; i++) {
                 out[i] = in[i];
