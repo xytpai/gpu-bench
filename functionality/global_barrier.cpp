@@ -7,15 +7,14 @@ using namespace std;
 __device__ void global_barrier(int *counter) {
     __shared__ bool is_last_block;
     __syncthreads();
+    __threadfence();
     if (threadIdx.x == 0) {
         int prev = atomicAdd(counter, 1);
         is_last_block = (prev == gridDim.x - 1);
-        __threadfence();
     }
     __syncthreads();
     if (is_last_block) {
         *counter = 0;
-        __threadfence();
     } else {
         while (*reinterpret_cast<int volatile *>(counter) != 0) {}
     }
@@ -42,7 +41,7 @@ __global__ void global_barrier_test_kernel(int *counter, int *nums) {
     }
 }
 
-void global_barrier_test(int nblocks = 128) {
+void global_barrier_test(int nblocks = 256) {
     int *counter, *nums;
     gpuMalloc(&counter, 1 * sizeof(int));
     gpuMemset(counter, 0, 1 * sizeof(int));
