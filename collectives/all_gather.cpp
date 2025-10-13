@@ -78,13 +78,13 @@ private:
     bool p2p_;
 };
 
-template <int vec_size = 4>
-__global__ void ring_all_gather_kernel(void **workspace, int rank, int nranks, size_t buffer_size) {
+template <int NRanks, int vec_size = 4>
+__global__ void ring_all_gather_kernel(void **workspace, int rank, size_t buffer_size) {
     const int block_work_size = blockDim.x * vec_size;
     int counter = rank;
-    SyncComm comm(workspace, nranks);
+    SyncComm<NRanks> comm(workspace);
     Barrier barrier(rank, comm);
-    for (int ct = 1; ct < nranks; ++ct) {
+    for (int ct = 1; ct < NRanks; ++ct) {
         size_t index = blockIdx.x * block_work_size + threadIdx.x * vec_size;
         unsigned char *in = (unsigned char *)comm.current_comm_bufs[counter];
         unsigned char *out = (unsigned char *)comm.next_comm_bufs[counter];
@@ -103,7 +103,7 @@ __global__ void ring_all_gather_kernel(void **workspace, int rank, int nranks, s
         //     }
         //     index += blockDim.x * vec_size;
         // }
-        counter = (counter + nranks - 1) % nranks;
+        counter = (counter + NRanks - 1) % NRanks;
         barrier.sync();
     }
     comm.update(barrier.m_flag_value);
@@ -120,8 +120,18 @@ public:
         for (int rank = 0; rank < nranks; ++rank) {
             workspaces[rank].init(rs, rank);
             auto s = rs[rank].streams[0];
-            ring_all_gather_kernel<<<numBlocks, threadsPerBlock, 0, s>>>(
-                workspaces[rank].workspace(), rank, nranks, buffer_size);
+            switch (nranks) {
+            case 8:
+                ring_all_gather_kernel<8><<<numBlocks, threadsPerBlock, 0, s>>>(
+                    workspaces[rank].workspace(), rank, buffer_size);
+                break;
+            case 4:
+                ring_all_gather_kernel<4><<<numBlocks, threadsPerBlock, 0, s>>>(
+                    workspaces[rank].workspace(), rank, buffer_size);
+                break;
+            default:
+                return;
+            }
         }
         for (int g = 0; g < nranks; ++g) {
             gpuSetDevice(g);

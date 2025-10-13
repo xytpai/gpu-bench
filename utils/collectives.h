@@ -158,16 +158,16 @@ private:
     void **workspace_;
 };
 
+template <int NRanks>
 struct SyncComm {
-    __device__ __forceinline__ SyncComm(void **workspace, int nr) {
-        counter_ptr = &reinterpret_cast<int *>(workspace[nr * 3])[0];
-        flag_ptr = &reinterpret_cast<int *>(workspace[nr * 3])[1];
+    __device__ __forceinline__ SyncComm(void **workspace) {
+        counter_ptr = &reinterpret_cast<int *>(workspace[NRanks * 3])[0];
+        flag_ptr = &reinterpret_cast<int *>(workspace[NRanks * 3])[1];
         flag_value = *flag_ptr;
-        nranks = nr;
-        for (int r = 0; r < nranks; ++r) {
+        for (int r = 0; r < NRanks; ++r) {
             current_comm_bufs[r] = workspace[r];
-            barrier_flags[r] = workspace[nranks + r];
-            next_comm_bufs[r] = workspace[2 * nranks + r];
+            barrier_flags[r] = workspace[NRanks + r];
+            next_comm_bufs[r] = workspace[2 * NRanks + r];
         }
         __syncthreads();
         if (threadIdx.x == 0) {
@@ -186,35 +186,34 @@ struct SyncComm {
 
     int *counter_ptr;
     int *flag_ptr;
-    void *current_comm_bufs[8];
-    void *next_comm_bufs[8];
-    void *barrier_flags[8];
+    void *current_comm_bufs[NRanks];
+    void *next_comm_bufs[NRanks];
+    void *barrier_flags[NRanks];
     int flag_value;
-    int nranks;
 };
 
+template <int NRanks>
 class Barrier {
 public:
-    __device__ __forceinline__ Barrier(int rank, SyncComm const &comm) {
-        nranks = comm.nranks;
-        if (threadIdx.x < nranks) {
+    __device__ __forceinline__ Barrier(int rank, SyncComm<NRanks> const &comm) {
+        if (threadIdx.x < NRanks) {
             m_flag_value = comm.flag_value;
             int current_rank = rank;
             int target_rank = threadIdx.x;
             m_target_flag = reinterpret_cast<int *>(comm.barrier_flags[target_rank]) + current_rank;
-            m_current_flag = reinterpret_cast<int *>(comm.barrier_flags[current_rank]) + blockIdx.x * nranks + target_rank;
+            m_current_flag = reinterpret_cast<int *>(comm.barrier_flags[current_rank]) + blockIdx.x * NRanks + target_rank;
         }
     }
 
     __device__ __forceinline__ void sync() {
         constexpr int kBarrierFlagCount = DEFAULT_NCTAS;
         __syncthreads();
-        if (threadIdx.x < nranks) {
+        if (threadIdx.x < NRanks) {
             m_flag_value = next_flag(m_flag_value);
             // To avoid the ABA problem, we need to synchronize the correct flag value to all
             // barrier_flags, even if the corresponding CTA has not been launched.
             for (int flag_idx = blockIdx.x; flag_idx < kBarrierFlagCount; flag_idx += gridDim.x) {
-                st_flag(m_target_flag + flag_idx * nranks, m_flag_value);
+                st_flag(m_target_flag + flag_idx * NRanks, m_flag_value);
             }
             while (ld_flag(m_current_flag) == prev_flag(m_flag_value)) {
             }
@@ -256,7 +255,6 @@ protected:
 
 public:
     int m_flag_value;
-    int nranks;
 
 private:
     int *m_target_flag;
