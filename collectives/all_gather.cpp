@@ -88,21 +88,21 @@ __global__ void ring_all_gather_kernel(void **workspace, int rank, size_t buffer
         size_t index = blockIdx.x * block_work_size + threadIdx.x * vec_size;
         unsigned char *in = (unsigned char *)comm.current_comm_bufs[counter];
         unsigned char *out = (unsigned char *)comm.next_comm_bufs[counter];
-        // while (true) {
-        //     auto remaining = buffer_size - index;
-        //     if (remaining < vec_size) {
-        //         for (auto i = index; i < buffer_size; i++) {
-        //             out[i] = in[i];
-        //         }
-        //         break;
-        //     } else {
-        //         using vec_t = aligned_array<unsigned char, vec_size>;
-        //         auto in_vec = reinterpret_cast<vec_t *>(const_cast<unsigned char *>(&in[index]));
-        //         auto out_vec = reinterpret_cast<vec_t *>(&out[index]);
-        //         *out_vec = *in_vec;
-        //     }
-        //     index += blockDim.x * vec_size;
-        // }
+        while (true) {
+            auto remaining = buffer_size - index;
+            if (remaining < vec_size) {
+                for (auto i = index; i < buffer_size; i++) {
+                    out[i] = in[i];
+                }
+                break;
+            } else {
+                using vec_t = aligned_array<unsigned char, vec_size>;
+                auto in_vec = reinterpret_cast<vec_t *>(const_cast<unsigned char *>(&in[index]));
+                auto out_vec = reinterpret_cast<vec_t *>(&out[index]);
+                *out_vec = *in_vec;
+            }
+            index += blockDim.x * vec_size;
+        }
         counter = (counter + NRanks - 1) % NRanks;
         barrier.sync();
     }
