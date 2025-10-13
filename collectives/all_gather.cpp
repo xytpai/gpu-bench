@@ -102,9 +102,11 @@ __global__ void ring_all_gather_kernel(void **workspace, int rank, size_t buffer
             }
         }
         counter = (counter + NRanks - 1) % NRanks;
-        barrier.sync();
+        // barrier.sync();
     }
     comm.update(barrier.m_flag_value);
+    comm.lock();
+    comm.unlock();
 }
 
 class AllGatherRingBarrier {
@@ -113,7 +115,7 @@ public:
         int nranks = rs.size();
         int buffer_size = rs[0].buffer_size;
         dim3 threadsPerBlock(256);
-        dim3 numBlocks(256);
+        dim3 numBlocks(DEFAULT_NCTAS);
         std::vector<GPUWorkSpace> workspaces(nranks);
         for (int rank = 0; rank < nranks; ++rank) {
             workspaces[rank].init(rs, rank);
