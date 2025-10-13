@@ -106,9 +106,7 @@ std::tuple<double, bool, double> runbench(func_t fn, size_t buffer_size, size_t 
 }
 
 int main() {
-    enable_p2p();
-    int ngpus = 0;
-    gpuGetDeviceCount(&ngpus);
+    int ngpus = enable_p2p();
     size_t buffer_size = (size_t)1024 * 1024 * 1024;
     {
         std::cout << "======== 1GB p2p all gather direct test ========\n";

@@ -68,9 +68,7 @@ std::tuple<double, bool> runbench(int local, size_t buffer_size, size_t chunk_si
 
 int main() {
     std::cout << "1GB p2p broadcast gather direct test ... \n";
-    enable_p2p();
-    int ngpus = 0;
-    gpuGetDeviceCount(&ngpus);
+    int ngpus = enable_p2p();
     size_t buffer_size = (size_t)1024 * 1024 * 1024;
     size_t chunk_size = buffer_size;
     for (int local = 0; local < ngpus; ++local) {

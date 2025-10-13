@@ -6,7 +6,7 @@
 
 #include "device_common.h"
 
-void enable_p2p() {
+int enable_p2p() {
     int ngpus = 0;
     gpuGetDeviceCount(&ngpus);
     for (int local = 0; local < ngpus; ++local) {
@@ -19,6 +19,7 @@ void enable_p2p() {
             gpuDeviceEnablePeerAccess(peer, 0);
         }
     }
+    return ngpus;
 }
 
 struct GPUResources {
