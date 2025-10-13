@@ -6,7 +6,6 @@ using namespace std;
 
 __device__ void global_barrier(int *counter) {
     __shared__ bool is_last_block;
-    __syncthreads();
     __threadfence();
     if (threadIdx.x == 0) {
         int prev = atomicAdd(counter, 1);
@@ -15,6 +14,7 @@ __device__ void global_barrier(int *counter) {
     __syncthreads();
     if (is_last_block) {
         *counter = 0;
+        __threadfence();
     } else {
         while (*reinterpret_cast<int volatile *>(counter) != 0) {}
     }
