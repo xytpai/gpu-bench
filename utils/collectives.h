@@ -186,23 +186,6 @@ struct SyncComm {
         }
     }
 
-    __device__ __forceinline__ void lock() {
-        __syncthreads();
-        if (threadIdx.x == 0) {
-            atomicAdd(counter_ptr, 1);
-        }
-    }
-
-    __device__ __forceinline__ void unlock() {
-        __syncthreads();
-        if (threadIdx.x == 0) {
-            while (*reinterpret_cast<int volatile *>(counter_ptr) != gridDim.x) {
-            }
-            *counter_ptr = 0;
-        }
-        __syncthreads();
-    }
-
     int *counter_ptr;
     int *flag_ptr;
     void *current_comm_bufs[NRanks];
@@ -245,7 +228,8 @@ protected:
 #ifdef __CUDACC__
         asm volatile("st.global.release.sys.b32 [%1], %0;" ::"r"(flag), "l"(addr));
 #else
-        __atomic_store_n(addr, flag, __ATOMIC_RELEASE);
+        __threadfence_system();
+        __atomic_store_n(addr, flag, __ATOMIC_SEQ_CST);
 #endif
     }
 
@@ -256,7 +240,8 @@ protected:
                      : "=r"(flag)
                      : "l"(addr));
 #else
-        flag = __atomic_load_n(addr, __ATOMIC_ACQUIRE);
+        __threadfence_system();
+        flag = __atomic_load_n(addr, __ATOMIC_SEQ_CST);
 #endif
         return flag;
     }

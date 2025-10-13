@@ -102,11 +102,9 @@ __global__ void ring_all_gather_kernel(void **workspace, int rank, size_t buffer
             }
         }
         counter = (counter + NRanks - 1) % NRanks;
-        // barrier.sync();
+        barrier.sync();
     }
     comm.update(barrier.m_flag_value);
-    comm.lock();
-    comm.unlock();
 }
 
 class AllGatherRingBarrier {
