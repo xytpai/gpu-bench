@@ -13,6 +13,7 @@
 #define gpuFree hipFree
 #define gpuDeviceSynchronize hipDeviceSynchronize
 #define gpuSetDevice hipSetDevice
+#define gpuGetDevice hipGetDevice
 #define gpuGetDeviceCount hipGetDeviceCount
 #define gpuMemcpyPeerAsync hipMemcpyPeerAsync
 #define gpuDeviceCanAccessPeer hipDeviceCanAccessPeer
@@ -30,6 +31,12 @@
 #define gpuStreamDestroy hipStreamDestroy
 #define gpuStreamSynchronize hipStreamSynchronize
 
+#define gpuFuncAttributes hipFuncAttributes
+#define gpuFuncGetAttributes hipFuncGetAttributes
+#define gpuDeviceGetAttribute hipDeviceGetAttribute
+#define gpuDevAttrMaxRegistersPerBlock hipDeviceAttributeMaxRegistersPerBlock
+#define gpuDevAttrMultiProcessorCount hipDeviceAttributeMultiprocessorCount
+
 #else
 
 #include <cuda_runtime.h>
@@ -43,6 +50,7 @@
 #define gpuFree cudaFree
 #define gpuDeviceSynchronize cudaDeviceSynchronize
 #define gpuSetDevice cudaSetDevice
+#define gpuGetDevice cudaGetDevice
 #define gpuGetDeviceCount cudaGetDeviceCount
 #define gpuMemcpyPeerAsync cudaMemcpyPeerAsync
 #define gpuDeviceCanAccessPeer cudaDeviceCanAccessPeer
@@ -59,6 +67,12 @@
 #define gpuStreamCreate cudaStreamCreate
 #define gpuStreamDestroy cudaStreamDestroy
 #define gpuStreamSynchronize cudaStreamSynchronize
+
+#define gpuFuncAttributes cudaFuncAttributes
+#define gpuFuncGetAttributes cudaFuncGetAttributes
+#define gpuDeviceGetAttribute cudaDeviceGetAttribute
+#define gpuDevAttrMaxRegistersPerBlock cudaDevAttrMaxRegistersPerBlock
+#define gpuDevAttrMultiProcessorCount cudaDevAttrMultiProcessorCount
 
 #endif
 
