@@ -115,8 +115,8 @@ public:
     void operator()(std::vector<GPUResources> &rs) {
         int nranks = rs.size();
         int buffer_size = rs[0].buffer_size;
-        dim3 threadsPerBlock(256);
-        dim3 numBlocks(DEFAULT_NCTAS);
+        dim3 threadsPerBlock(64);
+        dim3 numBlocks(128);
         std::vector<GPUWorkSpace> workspaces(nranks);
         for (int rank = 0; rank < nranks; ++rank) {
             workspaces[rank].init(rs, rank);
@@ -209,13 +209,12 @@ int main() {
         std::cout << "Latency: " << seconds * 1000000 << " us\n";
         std::cout << "Per GPU: " << bw / ngpus * 2 << " GBps\n";
     }
-    // {
-    //     std::cout << "======== 1GB barrier all gather ring test ========\n";
-    //     size_t chunk_size = (size_t)1024 * 1024 * 1024;
-    //     AllGatherRingBarrier fn;
-    //     auto [bw, valid, seconds] = runbench(fn, buffer_size, chunk_size, ngpus);
-    //     std::cout << "Total: " << bw << " GBps --- val:" << valid << "\n";
-    //     std::cout << "Latency: " << seconds * 1000000 << " us\n";
-    //     std::cout << "Per GPU: " << bw / ngpus * 2 << " GBps\n";
-    // }
+    {
+        std::cout << "======== 1GB barrier all gather ring test ========\n";
+        AllGatherRingBarrier fn;
+        auto [bw, valid, seconds] = runbench(fn, buffer_size, buffer_size, 1);
+        std::cout << "Total: " << bw << " GBps --- val:" << valid << "\n";
+        std::cout << "Latency: " << seconds * 1000000 << " us\n";
+        std::cout << "Per GPU: " << bw / ngpus * 2 << " GBps\n";
+    }
 }

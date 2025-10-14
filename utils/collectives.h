@@ -210,6 +210,7 @@ public:
     __device__ __forceinline__ void sync() {
         constexpr int kBarrierFlagCount = DEFAULT_NCTAS;
         __syncthreads();
+        __threadfence_system();
         if (threadIdx.x < NRanks) {
             m_flag_value = next_flag(m_flag_value);
             // To avoid the ABA problem, we need to synchronize the correct flag value to all
@@ -228,7 +229,7 @@ protected:
 #ifdef __CUDACC__
         asm volatile("st.global.release.sys.b32 [%1], %0;" ::"r"(flag), "l"(addr));
 #else
-        __hip_atomic_store(addr, flag, __ATOMIC_RELEASE, __HIP_MEMORY_SCOPE_SYSTEM);
+        __atomic_store_n(addr, flag, __ATOMIC_SEQ_CST);
 #endif
     }
 
@@ -239,7 +240,7 @@ protected:
                      : "=r"(flag)
                      : "l"(addr));
 #else
-        flag = __hip_atomic_load(addr, __ATOMIC_ACQUIRE, __HIP_MEMORY_SCOPE_SYSTEM);
+        flag = __atomic_load_n(addr, __ATOMIC_SEQ_CST);
 #endif
         return flag;
     }
