@@ -112,24 +112,46 @@ __global__ void ring_all_gather_kernel(void **workspace, int rank, size_t buffer
 
 class AllGatherRingBarrier {
 public:
+    template <int NRanks>
+    std::tuple<int, int> get_launch_config() {
+        gpuFuncAttributes attr;
+        gpuFuncGetAttributes(&attr, (const void *)ring_all_gather_kernel<NRanks>);
+        int registers_per_thread = attr.numRegs;
+        int regs_per_block;
+        int device{-1};
+        gpuGetDevice(&device);
+        gpuDeviceGetAttribute(&regs_per_block, gpuDevAttrMaxRegistersPerBlock, device);
+        int max_threads_per_block = std::min(regs_per_block / registers_per_thread, 256);
+        int sm_count;
+        gpuDeviceGetAttribute(&sm_count, gpuDevAttrMultiProcessorCount, device);
+        int block_size = max_threads_per_block / 4;
+        int nblocks;
+        for (nblocks = 1; nblocks < sm_count; nblocks *= 2) {}
+        if (nblocks > sm_count) nblocks /= 2;
+        return {nblocks, block_size};
+    }
     void operator()(std::vector<GPUResources> &rs) {
         int nranks = rs.size();
         int buffer_size = rs[0].buffer_size;
-        dim3 threadsPerBlock(64);
-        dim3 numBlocks(128);
         std::vector<GPUWorkSpace> workspaces(nranks);
         for (int rank = 0; rank < nranks; ++rank) {
             workspaces[rank].init(rs, rank);
             auto s = rs[rank].streams[0];
             switch (nranks) {
-            case 8:
+            case 8: {
+                auto [nb, bs] = get_launch_config<8>();
+                dim3 threadsPerBlock(bs);
+                dim3 numBlocks(nb);
                 ring_all_gather_kernel<8><<<numBlocks, threadsPerBlock, 0, s>>>(
                     workspaces[rank].workspace(), rank, buffer_size);
-                break;
-            case 4:
+            } break;
+            case 4: {
+                auto [nb, bs] = get_launch_config<4>();
+                dim3 threadsPerBlock(bs);
+                dim3 numBlocks(nb);
                 ring_all_gather_kernel<4><<<numBlocks, threadsPerBlock, 0, s>>>(
                     workspaces[rank].workspace(), rank, buffer_size);
-                break;
+            } break;
             default:
                 return;
             }
