@@ -47,25 +47,28 @@ public:
     }
     void operator()(std::vector<GPUResources> &rs) {
         int ngpus = rs.size();
-        std::vector<int> counters(ngpus);
-        for (int i = 0; i < ngpus; ++i) {
-            counters[i] = i;
-        }
         size_t chunk_size = rs[0].chunk_size;
         int num_chunks = rs[0].num_chunks;
         int num_streams = rs[0].num_streams;
+        std::vector<std::vector<int>> counters(ngpus);
+        for (int i = 0; i < ngpus; ++i) {
+            counters[i].resize(num_chunks);
+            for (int c = 0; c < num_chunks; ++c) {
+                counters[i][c] = i;
+            }
+        }
         for (int ct = 1; ct < ngpus; ++ct) {
-            for (int local = 0; local < ngpus; ++local) {
-                int recver = (local + 1) % ngpus;
-                int ridx = counters[local];
-                for (int c = 0; c < num_chunks; ++c) {
-                    int s = c % num_streams;
+            for (int c = 0; c < num_chunks; ++c) {
+                int s = c % num_streams;
+                for (int local = 0; local < ngpus; ++local) {
+                    int recver = (local + 1) % ngpus;
+                    int ridx = counters[local][c];
                     memcpy_peer_async(rs[recver].buffers[ridx][c], recver,
                                       rs[local].buffers[ridx][c], local,
                                       chunk_size, rs[recver].streams[s],
                                       p2p_);
+                    counters[local][c] = (ridx + ngpus - 1) % ngpus;
                 }
-                counters[local] = (ridx + ngpus - 1) % ngpus;
             }
             for (int g = 0; g < ngpus; ++g) {
                 gpuSetDevice(g);
@@ -169,6 +172,7 @@ int main() {
     int ngpus = enable_p2p();
     std::cout << "ngpus: " << ngpus << "\n";
     size_t buffer_size = (size_t)1024 * 1024 * 1024;
+    size_t nchunks_ring = 4;
     {
         std::cout << "======== 1GB p2p all gather direct test ========\n";
         size_t chunk_size = (size_t)1024 * 1024 * 1024;
@@ -180,9 +184,9 @@ int main() {
     }
     {
         std::cout << "======== 1GB p2p all gather ring test ========\n";
-        size_t chunk_size = (size_t)1024 * 1024 * 1024 / 1;
+        size_t chunk_size = (size_t)1024 * 1024 * 1024 / nchunks_ring;
         AllGatherRing fn(true);
-        auto [bw, valid, seconds] = runbench(fn, buffer_size, chunk_size, ngpus * 1);
+        auto [bw, valid, seconds] = runbench(fn, buffer_size, chunk_size, nchunks_ring);
         std::cout << "Total: " << bw << " GBps --- val:" << valid << "\n";
         std::cout << "Latency: " << seconds * 1000000 << " us\n";
         std::cout << "Per GPU: " << bw / ngpus * 2 << " GBps\n";
@@ -198,20 +202,20 @@ int main() {
     }
     {
         std::cout << "======== 1GB uva all gather ring test ========\n";
-        size_t chunk_size = (size_t)1024 * 1024 * 1024 / 1;
+        size_t chunk_size = (size_t)1024 * 1024 * 1024 / nchunks_ring;
         AllGatherRing fn(false);
-        auto [bw, valid, seconds] = runbench(fn, buffer_size, chunk_size, ngpus * 1);
+        auto [bw, valid, seconds] = runbench(fn, buffer_size, chunk_size, nchunks_ring);
         std::cout << "Total: " << bw << " GBps --- val:" << valid << "\n";
         std::cout << "Latency: " << seconds * 1000000 << " us\n";
         std::cout << "Per GPU: " << bw / ngpus * 2 << " GBps\n";
     }
-    {
-        std::cout << "======== 1GB barrier all gather ring test ========\n";
-        size_t chunk_size = (size_t)1024 * 1024 * 1024;
-        AllGatherRingBarrier fn;
-        auto [bw, valid, seconds] = runbench(fn, buffer_size, chunk_size, ngpus);
-        std::cout << "Total: " << bw << " GBps --- val:" << valid << "\n";
-        std::cout << "Latency: " << seconds * 1000000 << " us\n";
-        std::cout << "Per GPU: " << bw / ngpus * 2 << " GBps\n";
-    }
+    // {
+    //     std::cout << "======== 1GB barrier all gather ring test ========\n";
+    //     size_t chunk_size = (size_t)1024 * 1024 * 1024;
+    //     AllGatherRingBarrier fn;
+    //     auto [bw, valid, seconds] = runbench(fn, buffer_size, chunk_size, ngpus);
+    //     std::cout << "Total: " << bw << " GBps --- val:" << valid << "\n";
+    //     std::cout << "Latency: " << seconds * 1000000 << " us\n";
+    //     std::cout << "Per GPU: " << bw / ngpus * 2 << " GBps\n";
+    // }
 }
