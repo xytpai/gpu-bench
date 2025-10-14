@@ -53,7 +53,9 @@ void global_barrier_test() {
     std::cout << "sm_count: " << sm_count << "\n";
     int block_size = max_threads_per_block / 4;
     std::cout << "block_size: " << block_size << "\n";
-    int nblocks = sm_count;
+    int nblocks;
+    for (nblocks = 1; nblocks < sm_count; nblocks *= 2) {}
+    if (nblocks > sm_count) nblocks /= 2;
     std::cout << "nblocks: " << nblocks << "\n";
     int *counter, *nums;
     gpuMalloc(&counter, 1 * sizeof(int));
