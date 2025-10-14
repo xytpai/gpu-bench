@@ -21,6 +21,7 @@ __global__ void ring_all_reduce_kernel(void **workspace, int rank, size_t chunk_
         T *out = (T *)comm.next_comm_bufs[counter];
         for (size_t index = index_; index < length; index += block_work_size * gridDim.x) {
             auto remaining = length - index;
+            __threadfence();
             if (remaining < vec_size) {
                 for (auto i = index; i < length; i++) {
                     out[i] += in[i];
@@ -46,6 +47,7 @@ __global__ void ring_all_reduce_kernel(void **workspace, int rank, size_t chunk_
         T *out = (T *)comm.next_comm_bufs[counter];
         for (size_t index = index_; index < length; index += block_work_size * gridDim.x) {
             auto remaining = length - index;
+            __threadfence();
             if (remaining < vec_size) {
                 for (auto i = index; i < length; i++) {
                     out[i] = in[i];

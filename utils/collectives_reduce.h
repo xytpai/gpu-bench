@@ -6,6 +6,7 @@ void allocate_reduce_resources(std::vector<GPUResources> &rs, size_t data_bytes,
     int ngpus = 0;
     gpuGetDeviceCount(&ngpus);
     rs.resize(ngpus);
+    assert(data_bytes % (ngpus * 4) == 0);
     size_t chunk_size = (data_bytes + (size_t)ngpus - (size_t)1) / (size_t)ngpus;
     size_t rounded_data_bytes = chunk_size * (size_t)ngpus;
     for (int rank = 0; rank < ngpus; ++rank) {
@@ -85,10 +86,10 @@ bool validate_reduce_flags(std::vector<GPUResources> &rs) {
             for (auto i = 0; i < chunk_len; ++i) {
                 if (results[i] != sum) valid = false;
             }
-            std::cout << results[0] << " ";
+            // std::cout << results[0] << " ";
         }
         delete[] results;
-        std::cout << "\n";
+        // std::cout << "\n";
     }
     return valid;
 }
