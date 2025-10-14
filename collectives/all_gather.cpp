@@ -86,7 +86,7 @@ __global__ void ring_all_gather_kernel(void **workspace, int rank, size_t buffer
     const int block_work_size = blockDim.x * vec_size;
     int counter = rank;
     SyncComm<NRanks> comm(workspace);
-    Barrier barrier(rank, comm);
+    Barrier<NRanks> barrier(rank, comm);
     for (int ct = 1; ct < NRanks; ++ct) {
         size_t index_ = blockIdx.x * block_work_size + threadIdx.x * vec_size;
         unsigned char *in = (unsigned char *)comm.current_comm_bufs[counter];
@@ -112,24 +112,6 @@ __global__ void ring_all_gather_kernel(void **workspace, int rank, size_t buffer
 
 class AllGatherRingBarrier {
 public:
-    template <int NRanks>
-    std::tuple<int, int> get_launch_config() {
-        gpuFuncAttributes attr;
-        gpuFuncGetAttributes(&attr, (const void *)ring_all_gather_kernel<NRanks>);
-        int registers_per_thread = attr.numRegs;
-        int regs_per_block;
-        int device{-1};
-        gpuGetDevice(&device);
-        gpuDeviceGetAttribute(&regs_per_block, gpuDevAttrMaxRegistersPerBlock, device);
-        int max_threads_per_block = std::min(regs_per_block / registers_per_thread, 256);
-        int sm_count;
-        gpuDeviceGetAttribute(&sm_count, gpuDevAttrMultiProcessorCount, device);
-        int block_size = max_threads_per_block / 4;
-        int nblocks;
-        for (nblocks = 1; nblocks < sm_count; nblocks *= 2) {}
-        if (nblocks > sm_count) nblocks /= 2;
-        return {nblocks, block_size};
-    }
     void operator()(std::vector<GPUResources> &rs) {
         int nranks = rs.size();
         int buffer_size = rs[0].buffer_size;
@@ -137,18 +119,14 @@ public:
         for (int rank = 0; rank < nranks; ++rank) {
             workspaces[rank].init(rs, rank);
             auto s = rs[rank].streams[0];
+            dim3 threadsPerBlock(256);
+            dim3 numBlocks(DEFAULT_NCTAS);
             switch (nranks) {
             case 8: {
-                auto [nb, bs] = get_launch_config<8>();
-                dim3 threadsPerBlock(bs);
-                dim3 numBlocks(nb);
                 ring_all_gather_kernel<8><<<numBlocks, threadsPerBlock, 0, s>>>(
                     workspaces[rank].workspace(), rank, buffer_size);
             } break;
             case 4: {
-                auto [nb, bs] = get_launch_config<4>();
-                dim3 threadsPerBlock(bs);
-                dim3 numBlocks(nb);
                 ring_all_gather_kernel<4><<<numBlocks, threadsPerBlock, 0, s>>>(
                     workspaces[rank].workspace(), rank, buffer_size);
             } break;
@@ -166,7 +144,7 @@ public:
 template <typename func_t>
 std::tuple<double, bool, double> runbench(func_t fn, size_t buffer_size, size_t chunk_size, int nstreams) {
     std::vector<GPUResources> rs;
-    allocate_resources(rs, buffer_size, chunk_size, nstreams);
+    allocate_gather_resources(rs, buffer_size, chunk_size, nstreams);
     int ngpus = rs.size();
     std::vector<std::vector<bool>> mask(ngpus);
     for (int local = 0; local < ngpus; ++local) {
@@ -186,7 +164,7 @@ std::tuple<double, bool, double> runbench(func_t fn, size_t buffer_size, size_t 
     double seconds = std::chrono::duration<double>(t1 - t0).count();
     size_t nbytes_total = (ngpus - 1) * ngpus * buffer_size;
     double gbps = ((double)nbytes_total / seconds) / 1e9;
-    delete_resources(rs);
+    delete_gather_resources(rs);
     return {gbps, valid, seconds};
 }
 

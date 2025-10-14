@@ -74,7 +74,7 @@ template <typename func_t>
 std::tuple<double, bool> runbench(func_t fn, int src, int dst, size_t buffer_size, size_t chunk_size, int nstreams, bool bidir) {
     static unsigned char flag = 0xA3;
     std::vector<GPUResources> rs;
-    allocate_resources(rs, buffer_size, chunk_size, nstreams);
+    allocate_gather_resources(rs, buffer_size, chunk_size, nstreams);
     int ngpus = rs.size();
     for (int w = 0; w < 2; ++w) {
         fn(src, dst, rs);
@@ -97,7 +97,7 @@ std::tuple<double, bool> runbench(func_t fn, int src, int dst, size_t buffer_siz
     mask[dst][src] = true;
     if (bidir) mask[src][dst] = true;
     bool valid = validate_gather_flags(rs, flag, mask);
-    delete_resources(rs);
+    delete_gather_resources(rs);
     flag += 1;
     return {gbps, valid};
 }

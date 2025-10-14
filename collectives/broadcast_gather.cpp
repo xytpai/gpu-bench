@@ -37,7 +37,7 @@ void run(int local, std::vector<GPUResources> &rs) {
 
 std::tuple<double, bool> runbench(int local, size_t buffer_size, size_t chunk_size, int nstreams) {
     std::vector<GPUResources> rs;
-    allocate_resources(rs, buffer_size, chunk_size, nstreams);
+    allocate_gather_resources(rs, buffer_size, chunk_size, nstreams);
     int ngpus = rs.size();
     for (int w = 0; w < 2; ++w) {
         run(local, rs);
@@ -62,7 +62,7 @@ std::tuple<double, bool> runbench(int local, size_t buffer_size, size_t chunk_si
         mask[i][local] = true;
     }
     bool valid = validate_gather_flags(rs, 0xA1, mask);
-    delete_resources(rs);
+    delete_gather_resources(rs);
     return {gbps, valid};
 }
 

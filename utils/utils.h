@@ -5,7 +5,8 @@
 #include <time.h>
 
 #include "collectives.h"
-// #include "comm.h"
+#include "collectives_gather.h"
+#include "collectives_reduce.h"
 #include "compare.h"
 #include "device_common.h"
 
