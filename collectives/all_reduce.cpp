@@ -8,8 +8,9 @@
 using namespace std;
 
 template <typename T, int NRanks, int vec_size = 4>
-__global__ void ring_all_reduce_kernel(void **workspace, int rank, size_t length) {
+__global__ void ring_all_reduce_kernel(void **workspace, int rank, size_t chunk_size) {
     const int block_work_size = blockDim.x * vec_size;
+    size_t length = chunk_size / sizeof(T);
     size_t index_ = blockIdx.x * block_work_size + threadIdx.x * vec_size;
     int counter = rank;
     SyncComm<NRanks> comm(workspace);
@@ -68,8 +69,7 @@ class AllReduceRing {
 public:
     void operator()(std::vector<GPUResources> &rs) {
         int nranks = rs.size();
-        size_t buffer_size = rs[0].buffer_size;
-        size_t length = buffer_size / sizeof(T);
+        size_t chunk_size = rs[0].chunk_size;
         std::vector<GPUWorkSpace> workspaces(nranks);
         for (int rank = 0; rank < nranks; ++rank) {
             workspaces[rank].init(rs, rank);
@@ -79,11 +79,11 @@ public:
             switch (nranks) {
             case 8: {
                 ring_all_reduce_kernel<T, 8><<<numBlocks, threadsPerBlock, 0, s>>>(
-                    workspaces[rank].workspace(), rank, length);
+                    workspaces[rank].workspace(), rank, chunk_size);
             } break;
             case 4: {
                 ring_all_reduce_kernel<T, 4><<<numBlocks, threadsPerBlock, 0, s>>>(
-                    workspaces[rank].workspace(), rank, length);
+                    workspaces[rank].workspace(), rank, chunk_size);
             } break;
             default:
                 return;
@@ -97,35 +97,34 @@ public:
 };
 
 template <typename T, typename func_t>
-std::tuple<double, bool, double> runbench(func_t fn, size_t size_bytes) {
+std::tuple<double, bool, double> runbench(func_t fn, size_t data_bytes) {
     std::vector<GPUResources> rs;
-    allocate_resources(rs, size_bytes, size_bytes, 1);
+    allocate_reduce_resources(rs, data_bytes);
     int ngpus = rs.size();
     for (int w = 0; w < 2; ++w) {
         fn(rs);
     }
-    // reset_gather_flags(rs, 0xA3);
+    reset_reduce_flags<T>(rs);
     auto t0 = std::chrono::high_resolution_clock::now();
     fn(rs);
     auto t1 = std::chrono::high_resolution_clock::now();
-    // bool valid = validate_gather_flags(rs, 0xA3, mask);
-    bool valid = false;
+    bool valid = validate_reduce_flags<T>(rs);
     double seconds = std::chrono::duration<double>(t1 - t0).count();
-    size_t nbytes_total = (ngpus - 1) * ngpus * size_bytes;
+    size_t nbytes_total = (ngpus - 1) * ngpus * data_bytes;
     double gbps = ((double)nbytes_total / seconds) / 1e9;
-    delete_resources(rs);
+    delete_reduce_resources(rs);
     return {gbps, valid, seconds};
 }
 
 int main() {
     int ngpus = enable_p2p();
     std::cout << "ngpus: " << ngpus << "\n";
-    size_t buffer_size = (size_t)1024 * 1024 * 1024;
+    size_t data_size = (size_t)1024 * 1024 * 1024;
     {
         std::cout << "======== 1GB barrier all reduce ring test ========\n";
         using scalar_t = float;
         AllReduceRing<scalar_t> fn;
-        auto [bw, valid, seconds] = runbench<scalar_t>(fn, buffer_size);
+        auto [bw, valid, seconds] = runbench<scalar_t>(fn, data_size);
         std::cout << "Total: " << bw << " GBps --- val:" << valid << "\n";
         std::cout << "Latency: " << seconds * 1000000 << " us\n";
         std::cout << "Per GPU: " << bw / ngpus * 2 << " GBps\n";

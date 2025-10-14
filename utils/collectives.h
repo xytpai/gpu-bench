@@ -44,7 +44,6 @@ public:
         workspace_(nullptr) {
     }
     void init(std::vector<GPUResources> &rs, int rank) {
-        assert(rs[0].chunk_size == rs[0].buffer_size);
         gpuSetDevice(rank);
         int nranks = rs.size();
         auto &r = rs[rank];
@@ -54,6 +53,7 @@ public:
         gpuMemset(r.flag, 0, sizeof(int));
         std::vector<void *> workspace(nranks * 3 + 2);
         for (int peer = 0; peer < nranks; ++peer) {
+            assert(r.buffers[peer].size() == 1);
             workspace[peer] = r.buffers[peer][0];
             workspace[nranks + peer] = (void *)rs[peer].barrier_flags;
             workspace[2 * nranks + peer] = rs[next_rank].buffers[peer][0];
