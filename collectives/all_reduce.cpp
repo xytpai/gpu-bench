@@ -40,7 +40,6 @@ __global__ void ring_all_reduce_kernel(void **workspace, int rank, size_t chunk_
         counter = (counter + NRanks - 1) % NRanks;
         barrier.sync();
     }
-    counter = (counter + 1) % NRanks;
     // all gather
     for (int ct = 1; ct < NRanks; ++ct) {
         T *in = (T *)comm.current_comm_bufs[counter];
@@ -110,7 +109,8 @@ std::tuple<double, bool, double> runbench(func_t fn, size_t data_bytes) {
     auto t1 = std::chrono::high_resolution_clock::now();
     bool valid = validate_reduce_flags<T>(rs);
     double seconds = std::chrono::duration<double>(t1 - t0).count();
-    size_t nbytes_total = (ngpus - 1) * ngpus * data_bytes;
+    size_t chunk_size = rs[0].chunk_size;
+    size_t nbytes_total = (ngpus - 1) * 2 * ngpus * chunk_size;
     double gbps = ((double)nbytes_total / seconds) / 1e9;
     delete_reduce_resources(rs);
     return {gbps, valid, seconds};
