@@ -71,6 +71,7 @@ bool validate_reduce_flags(std::vector<GPUResources> &rs) {
     auto element_bytes = sizeof(T);
     int ngpus = rs.size();
     int sum = (ngpus - 1) * ngpus / 2;
+    bool valid = true;
     for (int local = 0; local < ngpus; ++local) {
         gpuSetDevice(local);
         size_t chunk_size = rs[local].chunk_size;
@@ -82,10 +83,12 @@ bool validate_reduce_flags(std::vector<GPUResources> &rs) {
             gpuMemcpy(results, rs[local].buffers[c][0], chunk_size, gpuMemcpyDeviceToHost);
             gpuDeviceSynchronize();
             for (auto i = 0; i < chunk_len; ++i) {
-                if (results[i] != sum) return false;
+                if (results[i] != sum) valid = false;
             }
+            std::cout << results[0] << " ";
         }
         delete[] results;
+        std::cout << "\n";
     }
-    return true;
+    return valid;
 }
