@@ -63,9 +63,15 @@ public:
                 int recver = (rank + 1) % nranks;
                 int ridx = counters[rank];
                 size_t offset = ridx * chunk_size;
+                size_t copy_offset = (nranks + ridx) * chunk_size;
+                memcpy_peer_async(
+                    rs[recver].buffers + copy_offset, recver,
+                    rs[rank].buffers + offset, rank,
+                    chunk_size, rs[recver].streams[0],
+                    p2p_);
                 reduce_kernel<T, vec_size, 1>(
                     (T *)(rs[recver].buffers + offset), recver,
-                    (T *)(rs[rank].buffers + offset), rank,
+                    (T *)(rs[recver].buffers + copy_offset), recver,
                     chunk_len, rs[recver].streams[0]);
                 counters[rank] = (ridx + nranks - 1) % nranks;
             }
@@ -74,6 +80,7 @@ public:
                 gpuDeviceSynchronize();
             }
         }
+        // #ifdef __CUDACC__
         for (int ct = 1; ct < nranks; ++ct) {
             for (int rank = 0; rank < nranks; ++rank) {
                 int recver = (rank + 1) % nranks;
@@ -91,6 +98,8 @@ public:
                 gpuDeviceSynchronize();
             }
         }
+        // #else
+        // #endif
     }
 
 private:
@@ -102,7 +111,7 @@ std::tuple<double, bool, double> runbench(int nranks, func_t fn, size_t data_byt
     std::vector<GPUResources> rs;
     assert(data_bytes % nranks == 0);
     size_t chunk_size = data_bytes / nranks;
-    allocate_resources(rs, chunk_size, /*nsegments*/ 1, /*nstreams*/ 1);
+    allocate_resources(rs, chunk_size, /*nsegments*/ 1, /*nstreams*/ nranks, /*alloc size*/ chunk_size * 2);
     for (int w = 0; w < 2; ++w) {
         fn(rs);
     }
