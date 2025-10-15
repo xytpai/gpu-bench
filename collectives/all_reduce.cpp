@@ -35,6 +35,7 @@ __global__ void _reduce_kernel(T *dst, const T *src, size_t n) {
 
 template <typename T, int vec_size, int loops>
 void reduce_kernel(T *dst, int dst_dev, const T *src, int src_dev, size_t n, gpuStream_t s) {
+    gpuSetDevice(dst_dev);
     constexpr int block_size = 256;
     constexpr int block_work_size = loops * block_size * vec_size;
     dim3 threadsPerBlock(block_size);
@@ -71,17 +72,22 @@ public:
                 memcpy_peer_async(
                     rs[recver].buffers + roffset_copy, recver,
                     rs[rank].buffers + roffset, rank,
-                    chunk_size, rs[rank].streams[0],
+                    chunk_size, rs[recver].streams[0],
                     p2p_);
-                memcpy_peer_async(
-                    rs[rank].buffers + soffset_copy, recver,
-                    rs[sender].buffers + soffset, rank,
-                    chunk_size, rs[rank].streams[0],
-                    p2p_);
+                // memcpy_peer_async(
+                //     rs[recver].buffers + roffset_copy, recver,
+                //     rs[rank].buffers + roffset, rank,
+                //     chunk_size, rs[recver].streams[0],
+                //     p2p_);
+                // memcpy_peer_async(
+                //     rs[rank].buffers + soffset_copy, rank,
+                //     rs[sender].buffers + soffset, sender,
+                //     chunk_size, rs[rank].streams[0],
+                //     p2p_);
                 reduce_kernel<T, vec_size, 1>(
-                    (T *)(rs[rank].buffers + soffset), recver,
-                    (T *)(rs[rank].buffers + soffset_copy), recver,
-                    chunk_len, rs[rank].streams[0]);
+                    (T *)(rs[recver].buffers + roffset), recver,
+                    (T *)(rs[recver].buffers + roffset_copy), recver,
+                    chunk_len, rs[recver].streams[0]);
                 counters[rank] = sidx;
             }
             for (int r = 0; r < nranks; ++r) {
