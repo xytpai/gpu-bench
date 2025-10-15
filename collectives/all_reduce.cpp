@@ -61,19 +61,28 @@ public:
         for (int ct = 1; ct < nranks; ++ct) {
             for (int rank = 0; rank < nranks; ++rank) {
                 int recver = (rank + 1) % nranks;
+                int sender = (rank + nranks - 1) % nranks;
                 int ridx = counters[rank];
-                size_t offset = ridx * chunk_size;
-                size_t copy_offset = (nranks + ridx) * chunk_size;
+                int sidx = (ridx + nranks - 1) % nranks;
+                size_t roffset = ridx * chunk_size;
+                size_t roffset_copy = (nranks + ridx) * chunk_size;
+                size_t soffset = sidx * chunk_size;
+                size_t soffset_copy = (nranks + sidx) * chunk_size;
                 memcpy_peer_async(
-                    rs[recver].buffers + copy_offset, recver,
-                    rs[rank].buffers + offset, rank,
-                    chunk_size, rs[recver].streams[0],
+                    rs[recver].buffers + roffset_copy, recver,
+                    rs[rank].buffers + roffset, rank,
+                    chunk_size, rs[rank].streams[0],
+                    p2p_);
+                memcpy_peer_async(
+                    rs[rank].buffers + soffset_copy, recver,
+                    rs[sender].buffers + soffset, rank,
+                    chunk_size, rs[rank].streams[0],
                     p2p_);
                 reduce_kernel<T, vec_size, 1>(
-                    (T *)(rs[recver].buffers + offset), recver,
-                    (T *)(rs[recver].buffers + copy_offset), recver,
-                    chunk_len, rs[recver].streams[0]);
-                counters[rank] = (ridx + nranks - 1) % nranks;
+                    (T *)(rs[rank].buffers + soffset), recver,
+                    (T *)(rs[rank].buffers + soffset_copy), recver,
+                    chunk_len, rs[rank].streams[0]);
+                counters[rank] = sidx;
             }
             for (int r = 0; r < nranks; ++r) {
                 gpuSetDevice(r);
