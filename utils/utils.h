@@ -6,7 +6,7 @@
 
 #include "collectives.h"
 #include "collectives_gather.h"
-// #include "collectives_reduce.h"
+#include "collectives_reduce.h"
 #include "compare.h"
 #include "device_common.h"
 

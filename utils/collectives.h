@@ -37,7 +37,7 @@ struct GPUResources {
 
 #define DEFAULT_NCTAS 256
 
-void allocate_resources(std::vector<GPUResources> &rs, size_t chunk_size, size_t segment_size, int streams_per_gpu, int nblocks_per_gpu = DEFAULT_NCTAS) {
+int allocate_resources(std::vector<GPUResources> &rs, size_t chunk_size, size_t segment_size, int streams_per_gpu, int nblocks_per_gpu = DEFAULT_NCTAS) {
     int nranks = 0;
     gpuGetDeviceCount(&nranks);
     rs.resize(nranks);
@@ -57,6 +57,7 @@ void allocate_resources(std::vector<GPUResources> &rs, size_t chunk_size, size_t
         gpuMalloc(&rs[rank].flag, sizeof(int));
         rs[rank].nblocks = nblocks_per_gpu;
     }
+    return nranks;
 }
 
 void delete_resources(std::vector<GPUResources> &rs) {

@@ -7,165 +7,102 @@
 #include "utils.h"
 using namespace std;
 
-template <typename T, int NRanks, int vec_size = 4>
-__global__ void ring_all_reduce_kernel(void **workspace, int rank, size_t chunk_size) {
-    const int block_work_size = blockDim.x * vec_size;
-    size_t length = chunk_size / sizeof(T);
-    size_t index_ = blockIdx.x * block_work_size + threadIdx.x * vec_size;
-    int counter = rank;
-    SyncComm<NRanks> comm(workspace);
-    Barrier<NRanks> barrier(rank, comm);
-    // reduce scatter
-    for (int ct = 1; ct < NRanks; ++ct) {
-        T *in = (T *)comm.current_comm_bufs[counter];
-        T *out = (T *)comm.next_comm_bufs[counter];
-        for (size_t index = index_; index < length; index += block_work_size * gridDim.x) {
-            auto remaining = length - index;
-            __threadfence();
-            if (remaining < vec_size) {
-                for (auto i = index; i < length; i++) {
-                    out[i] += in[i];
-                }
-            } else {
-                using vec_t = aligned_array<T, vec_size>;
-                auto in_vec = *reinterpret_cast<vec_t *>(const_cast<T *>(&in[index]));
-                auto out_vec_ptr = reinterpret_cast<vec_t *>(&out[index]);
-                auto out_vec = *out_vec_ptr;
+template <typename T, int vec_size, int loops>
+__global__ void _reduce_kernel(T *dst, const T *src, size_t n) {
+    size_t block_work_size = loops * blockDim.x * vec_size;
+    size_t index = blockIdx.x * block_work_size + threadIdx.x * vec_size;
 #pragma unroll
-                for (int i = 0; i < vec_size; ++i) {
-                    out_vec.val[i] += in_vec.val[i];
-                }
-                *out_vec_ptr = out_vec;
+    for (int i = 0; i < loops; ++i) {
+        size_t remaining = n - index;
+        if (remaining < vec_size) {
+            for (auto ii = index; ii < n; ii++) {
+                dst[ii] += src[ii];
             }
-        }
-        counter = (counter + NRanks - 1) % NRanks;
-        barrier.sync();
-    }
-    // all gather
-    for (int ct = 1; ct < NRanks; ++ct) {
-        T *in = (T *)comm.current_comm_bufs[counter];
-        T *out = (T *)comm.next_comm_bufs[counter];
-        for (size_t index = index_; index < length; index += block_work_size * gridDim.x) {
-            auto remaining = length - index;
-            __threadfence();
-            if (remaining < vec_size) {
-                for (auto i = index; i < length; i++) {
-                    out[i] = in[i];
-                }
-            } else {
-                using vec_t = aligned_array<T, vec_size>;
-                auto in_vec = reinterpret_cast<vec_t *>(const_cast<T *>(&in[index]));
-                auto out_vec = reinterpret_cast<vec_t *>(&out[index]);
-                *out_vec = *in_vec;
+        } else {
+            using vec_t = aligned_array<T, vec_size>;
+            auto src_vec = *reinterpret_cast<vec_t *>(const_cast<T *>(&src[index]));
+            auto dst_vec_ptr = reinterpret_cast<vec_t *>(&dst[index]);
+            auto dst_vec = *dst_vec_ptr;
+#pragma unroll
+            for (int ii = 0; ii < vec_size; ++ii) {
+                dst_vec.val[ii] += src_vec.val[ii];
             }
+            *dst_vec_ptr = dst_vec;
         }
-        counter = (counter + NRanks - 1) % NRanks;
-        barrier.sync();
+        index += blockDim.x * vec_size;
     }
-    comm.update(barrier.m_flag_value);
+}
+
+template <typename T, int vec_size, int loops>
+void reduce_kernel(T *dst, int dst_dev, const T *src, int src_dev, size_t n, gpuStream_t s) {
+    constexpr int block_size = 256;
+    constexpr int block_work_size = loops * block_size * vec_size;
+    dim3 threadsPerBlock(block_size);
+    dim3 numBlocks((n + block_work_size - 1) / block_work_size);
+    _reduce_kernel<T, vec_size, loops><<<numBlocks, threadsPerBlock, 0, s>>>(dst, src, n);
 }
 
 template <typename T>
 class AllReduceRing {
 public:
-    bool is_ring() const {
-        return true;
+    AllReduceRing(bool p2p) :
+        p2p_(p2p) {
     }
     void operator()(std::vector<GPUResources> &rs) {
+        constexpr int vec_size = 16 / sizeof(T);
         int nranks = rs.size();
         size_t chunk_size = rs[0].chunk_size;
-        std::vector<GPUWorkSpace> workspaces(nranks);
-        for (int rank = 0; rank < nranks; ++rank) {
-            workspaces[rank].init(rs, rank);
-            auto s = rs[rank].streams[0];
-            dim3 threadsPerBlock(256);
-            dim3 numBlocks(DEFAULT_NCTAS);
-            switch (nranks) {
-            case 8: {
-                ring_all_reduce_kernel<T, 8><<<numBlocks, threadsPerBlock, 0, s>>>(
-                    workspaces[rank].workspace(), rank, chunk_size);
-            } break;
-            case 4: {
-                ring_all_reduce_kernel<T, 4><<<numBlocks, threadsPerBlock, 0, s>>>(
-                    workspaces[rank].workspace(), rank, chunk_size);
-            } break;
-            default:
-                return;
+        size_t chunk_len = chunk_size / sizeof(T);
+        int num_streams = rs[0].num_streams;
+        std::vector<int> counters(nranks);
+        for (int i = 0; i < nranks; ++i) {
+            counters[i] = i;
+        }
+        for (int ct = 1; ct < nranks; ++ct) {
+            for (int rank = 0; rank < nranks; ++rank) {
+                int recver = (rank + 1) % nranks;
+                int ridx = counters[rank];
+                size_t offset = ridx * chunk_size;
+                reduce_kernel<T, vec_size, 1>(
+                    (T *)(rs[recver].buffers + offset), recver,
+                    (T *)(rs[rank].buffers + offset), rank,
+                    chunk_len, rs[recver].streams[0]);
+                counters[rank] = (ridx + nranks - 1) % nranks;
+            }
+            for (int r = 0; r < nranks; ++r) {
+                gpuSetDevice(r);
+                gpuDeviceSynchronize();
             }
         }
-        for (int g = 0; g < nranks; ++g) {
-            gpuSetDevice(g);
-            gpuDeviceSynchronize();
+        for (int ct = 1; ct < nranks; ++ct) {
+            for (int rank = 0; rank < nranks; ++rank) {
+                int recver = (rank + 1) % nranks;
+                int ridx = counters[rank];
+                size_t offset = ridx * chunk_size;
+                memcpy_peer_async(
+                    rs[recver].buffers + offset, recver,
+                    rs[rank].buffers + offset, rank,
+                    chunk_size, rs[recver].streams[0],
+                    p2p_);
+                counters[rank] = (ridx + nranks - 1) % nranks;
+            }
+            for (int r = 0; r < nranks; ++r) {
+                gpuSetDevice(r);
+                gpuDeviceSynchronize();
+            }
         }
     }
+
+private:
+    bool p2p_;
 };
 
-template <typename T, int NRanks>
-__global__ void direct_all_reduce_kernel(void **workspace, int rank, size_t chunk_size) {
-    const int block_work_size = blockDim.x;
-    size_t length = chunk_size / sizeof(T);
-    size_t index_ = blockIdx.x * block_work_size + threadIdx.x;
-    SyncComm<NRanks> comm(workspace);
-    Barrier<NRanks> barrier(rank, comm);
-    // reduce scatter
-    for (size_t index = index_; index < length; index += block_work_size * gridDim.x) {
-        for (int peer = 0; peer < NRanks; ++peer) {
-        }
-    }
-
-    T *in = (T *)comm.current_comm_bufs[counter];
-    T *out = (T *)comm.next_comm_bufs[counter];
-
-    auto remaining = length - index;
-    __threadfence();
-    if (remaining < vec_size) {
-        for (auto i = index; i < length; i++) {
-            out[i] += in[i];
-        }
-    } else {
-        using vec_t = aligned_array<T, vec_size>;
-        auto in_vec = *reinterpret_cast<vec_t *>(const_cast<T *>(&in[index]));
-        auto out_vec_ptr = reinterpret_cast<vec_t *>(&out[index]);
-        auto out_vec = *out_vec_ptr;
-#pragma unroll
-        for (int i = 0; i < vec_size; ++i) {
-            out_vec.val[i] += in_vec.val[i];
-        }
-        *out_vec_ptr = out_vec;
-    }
-}
-counter = (counter + NRanks - 1) % NRanks;
-barrier.sync();
-}
-// all gather
-for (int ct = 1; ct < NRanks; ++ct) {
-    T *in = (T *)comm.current_comm_bufs[counter];
-    T *out = (T *)comm.next_comm_bufs[counter];
-    for (size_t index = index_; index < length; index += block_work_size * gridDim.x) {
-        auto remaining = length - index;
-        __threadfence();
-        if (remaining < vec_size) {
-            for (auto i = index; i < length; i++) {
-                out[i] = in[i];
-            }
-        } else {
-            using vec_t = aligned_array<T, vec_size>;
-            auto in_vec = reinterpret_cast<vec_t *>(const_cast<T *>(&in[index]));
-            auto out_vec = reinterpret_cast<vec_t *>(&out[index]);
-            *out_vec = *in_vec;
-        }
-    }
-    counter = (counter + NRanks - 1) % NRanks;
-    barrier.sync();
-}
-comm.update(barrier.m_flag_value);
-}
-
 template <typename T, typename func_t>
-std::tuple<double, bool, double> runbench(func_t fn, size_t data_bytes) {
+std::tuple<double, bool, double> runbench(int nranks, func_t fn, size_t data_bytes) {
     std::vector<GPUResources> rs;
-    allocate_reduce_resources(rs, data_bytes, fn.is_ring());
-    int ngpus = rs.size();
+    assert(data_bytes % nranks == 0);
+    size_t chunk_size = data_bytes / nranks;
+    allocate_resources(rs, chunk_size, /*nsegments*/ 1, /*nstreams*/ 1);
     for (int w = 0; w < 2; ++w) {
         fn(rs);
     }
@@ -175,24 +112,23 @@ std::tuple<double, bool, double> runbench(func_t fn, size_t data_bytes) {
     auto t1 = std::chrono::high_resolution_clock::now();
     bool valid = validate_reduce_flags<T>(rs);
     double seconds = std::chrono::duration<double>(t1 - t0).count();
-    size_t chunk_size = rs[0].chunk_size;
-    size_t nbytes_total = (ngpus - 1) * 2 * ngpus * chunk_size;
+    size_t nbytes_total = (nranks - 1) * 2 * nranks * chunk_size;
     double gbps = ((double)nbytes_total / seconds) / 1e9;
-    delete_reduce_resources(rs);
+    delete_resources(rs);
     return {gbps, valid, seconds};
 }
 
 int main() {
-    int ngpus = enable_p2p();
-    std::cout << "ngpus: " << ngpus << "\n";
+    int nranks = enable_p2p();
+    std::cout << "nranks: " << nranks << "\n";
     size_t data_size = (size_t)1024 * 1024 * 1024;
     {
-        std::cout << "======== 1GB barrier all reduce ring test ========\n";
+        std::cout << "======== 1GB all reduce ring test ========\n";
         using scalar_t = float;
-        AllReduceRing<scalar_t> fn;
-        auto [bw, valid, seconds] = runbench<scalar_t>(fn, data_size);
+        AllReduceRing<scalar_t> fn(true);
+        auto [bw, valid, seconds] = runbench<scalar_t>(nranks, fn, data_size);
         std::cout << "Total: " << bw << " GBps --- val:" << valid << "\n";
         std::cout << "Latency: " << seconds * 1000000 << " us\n";
-        std::cout << "Per GPU: " << bw / ngpus * 2 << " GBps\n";
+        std::cout << "Per GPU: " << bw / nranks * 2 << " GBps\n";
     }
 }
