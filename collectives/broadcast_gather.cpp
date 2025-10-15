@@ -7,7 +7,7 @@
 #include "utils.h"
 using namespace std;
 
-void run(int local, std::vector<GPUResources> &rs) {
+void run(int local, std::vector<GPUResources> &rs, bool is_p2p) {
     int nranks = rs.size();
     size_t chunk_size = rs[0].chunk_size;
     size_t segment_size = rs[0].segment_size;
@@ -24,13 +24,13 @@ void run(int local, std::vector<GPUResources> &rs) {
             memcpy_peer_async(rs[peer].buffers + offset_local, peer,
                               rs[local].buffers + offset_local, local,
                               remaining, rs[peer].streams[stream_peer],
-                              true);
+                              is_p2p);
             // peer -> local
             int stream_local = (c * nranks + peer) % num_streams;
             memcpy_peer_async(rs[local].buffers + offset_peer, local,
                               rs[peer].buffers + offset_peer, peer,
                               remaining, rs[local].streams[stream_local],
-                              true);
+                              is_p2p);
         }
         c++;
     }
@@ -40,16 +40,16 @@ void run(int local, std::vector<GPUResources> &rs) {
     }
 }
 
-std::tuple<double, bool> runbench(int local, size_t buffer_size, size_t segment_size, int nstreams) {
+std::tuple<double, bool> runbench(int local, size_t buffer_size, size_t segment_size, int nstreams, bool is_p2p) {
     std::vector<GPUResources> rs;
     allocate_resources(rs, buffer_size, segment_size, nstreams);
     int nranks = rs.size();
     for (int w = 0; w < 2; ++w) {
-        run(local, rs);
+        run(local, rs, is_p2p);
     }
     reset_gather_flags(rs);
     auto t0 = std::chrono::high_resolution_clock::now();
-    run(local, rs);
+    run(local, rs, is_p2p);
     auto t1 = std::chrono::high_resolution_clock::now();
     double seconds = std::chrono::duration<double>(t1 - t0).count();
     size_t nbytes_total = (nranks - 1) * 2 * buffer_size;
@@ -72,12 +72,17 @@ std::tuple<double, bool> runbench(int local, size_t buffer_size, size_t segment_
 }
 
 int main() {
-    std::cout << "1GB p2p broadcast gather direct test ... \n";
     int nranks = enable_p2p();
     size_t buffer_size = (size_t)1024 * 1024 * 1024;
     size_t segment_size = buffer_size;
+    std::cout << "1GB p2p broadcast gather direct test ... \n";
     for (int local = 0; local < nranks; ++local) {
-        auto [bw, valid] = runbench(local, buffer_size, segment_size, nranks);
+        auto [bw, valid] = runbench(local, buffer_size, segment_size, nranks, true);
+        std::cout << "[" << local << "]: " << bw << " GBps --- val:" << valid << "\n";
+    }
+    std::cout << "1GB uva broadcast gather direct test ... \n";
+    for (int local = 0; local < nranks; ++local) {
+        auto [bw, valid] = runbench(local, buffer_size, segment_size, nranks, false);
         std::cout << "[" << local << "]: " << bw << " GBps --- val:" << valid << "\n";
     }
 }
