@@ -21,15 +21,17 @@ public:
     }
     void operator()(int src, int dst, std::vector<GPUResources> &rs) {
         size_t chunk_size = rs[0].chunk_size;
-        int num_chunks = rs[0].num_chunks;
+        size_t segment_size = rs[0].segment_size;
         int num_streams = rs[0].num_streams;
-        for (int c = 0; c < num_chunks; ++c) {
+        int c = 0;
+        for (size_t idx = 0; idx < chunk_size; idx += segment_size) {
+            int stream = (c++) % num_streams;
+            size_t remaining = std::min(chunk_size - idx, segment_size);
             // src -> dst
-            int stream = c % num_streams;
             memcpy_peer_async(
-                rs[dst].buffers[src][c], dst,
-                rs[src].buffers[src][c], src,
-                chunk_size, rs[dst].streams[stream],
+                rs[dst].buffers + src * chunk_size + idx, dst,
+                rs[src].buffers + src * chunk_size + idx, src,
+                remaining, rs[dst].streams[stream],
                 p2p_);
         }
         sync_devices(dst, src);
@@ -46,21 +48,25 @@ public:
     }
     void operator()(int dev0, int dev1, std::vector<GPUResources> &rs) {
         size_t chunk_size = rs[0].chunk_size;
-        int num_chunks = rs[0].num_chunks;
+        size_t segment_size = rs[0].segment_size;
         int num_streams = rs[0].num_streams;
-        for (int c = 0; c < num_chunks; ++c) {
+        int c = 0;
+        for (size_t idx = 0; idx < chunk_size; idx += segment_size) {
+            int stream = (c++) % num_streams;
+            size_t remaining = std::min(chunk_size - idx, segment_size);
+            size_t offset0 = dev0 * chunk_size + idx;
+            size_t offset1 = dev1 * chunk_size + idx;
             // dev0 -> dev1
-            int stream = c % num_streams;
             memcpy_peer_async(
-                rs[dev1].buffers[dev0][c], dev1,
-                rs[dev0].buffers[dev0][c], dev0,
-                chunk_size, rs[dev1].streams[stream],
+                rs[dev1].buffers + offset0, dev1,
+                rs[dev0].buffers + offset0, dev0,
+                remaining, rs[dev1].streams[stream],
                 p2p_);
             // dev1 -> dev0
             memcpy_peer_async(
-                rs[dev0].buffers[dev1][c], dev0,
-                rs[dev1].buffers[dev1][c], dev1,
-                chunk_size, rs[dev0].streams[stream],
+                rs[dev0].buffers + offset1, dev0,
+                rs[dev1].buffers + offset1, dev1,
+                remaining, rs[dev0].streams[stream],
                 p2p_);
         }
         sync_devices(dev0, dev1);
@@ -71,15 +77,14 @@ private:
 };
 
 template <typename func_t>
-std::tuple<double, bool> runbench(func_t fn, int src, int dst, size_t buffer_size, size_t chunk_size, int nstreams, bool bidir) {
-    static unsigned char flag = 0xA3;
+std::tuple<double, bool> runbench(func_t fn, int src, int dst, size_t buffer_size, size_t segment_size, int nstreams, bool bidir) {
     std::vector<GPUResources> rs;
-    allocate_gather_resources(rs, buffer_size, chunk_size, nstreams);
-    int ngpus = rs.size();
+    allocate_resources(rs, buffer_size, segment_size, nstreams);
+    int nranks = rs.size();
     for (int w = 0; w < 2; ++w) {
         fn(src, dst, rs);
     }
-    reset_gather_flags(rs, flag);
+    reset_gather_flags(rs);
     auto t0 = std::chrono::high_resolution_clock::now();
     fn(src, dst, rs);
     auto t1 = std::chrono::high_resolution_clock::now();
@@ -87,18 +92,17 @@ std::tuple<double, bool> runbench(func_t fn, int src, int dst, size_t buffer_siz
     size_t nbytes_total = buffer_size;
     if (bidir) nbytes_total *= 2;
     double gbps = ((double)nbytes_total / seconds) / 1e9;
-    std::vector<std::vector<bool>> mask(ngpus);
-    for (int local = 0; local < ngpus; ++local) {
-        mask[local].resize(ngpus);
-        for (int peer = 0; peer < ngpus; ++peer) {
+    std::vector<std::vector<bool>> mask(nranks);
+    for (int local = 0; local < nranks; ++local) {
+        mask[local].resize(nranks);
+        for (int peer = 0; peer < nranks; ++peer) {
             mask[local][peer] = false;
         }
     }
     mask[dst][src] = true;
     if (bidir) mask[src][dst] = true;
-    bool valid = validate_gather_flags(rs, flag, mask);
-    delete_gather_resources(rs);
-    flag += 1;
+    bool valid = validate_gather_flags(rs, mask);
+    delete_resources(rs);
     return {gbps, valid};
 }
 
@@ -106,7 +110,7 @@ int main() {
     int device_count = enable_p2p();
     size_t buffer_size = (size_t)1024 * 1024 * 1024;
     int nstreams = 1;
-    size_t chunk_size = buffer_size / nstreams;
+    size_t segment_size = buffer_size / nstreams;
     {
         SingleCopy fn(true);
         std::cout << "======== 1GB p2p single dir copy test (GBps) ========\n";
@@ -118,7 +122,7 @@ int main() {
         for (int src = 0; src < device_count; ++src) {
             std::cout << std::right << std::setw(11) << ("[" + std::to_string(src) + "]");
             for (int dst = 0; dst < device_count; ++dst) {
-                auto [bw, valid] = runbench(fn, src, dst, buffer_size, chunk_size, nstreams, false);
+                auto [bw, valid] = runbench(fn, src, dst, buffer_size, segment_size, nstreams, false);
                 assert(valid);
                 std::cout << std::setw(10) << std::fixed << std::setprecision(3) << bw << " ";
             }
@@ -136,7 +140,7 @@ int main() {
         for (int src = 0; src < device_count; ++src) {
             std::cout << std::right << std::setw(11) << ("[" + std::to_string(src) + "]");
             for (int dst = 0; dst < device_count; ++dst) {
-                auto [bw, valid] = runbench(fn, src, dst, buffer_size, chunk_size, nstreams, false);
+                auto [bw, valid] = runbench(fn, src, dst, buffer_size, segment_size, nstreams, false);
                 assert(valid);
                 std::cout << std::setw(10) << std::fixed << std::setprecision(3) << bw << " ";
             }
@@ -156,7 +160,7 @@ int main() {
             for (int dst = 0; dst < device_count; ++dst) {
                 double bw = 0;
                 if (src < dst) {
-                    auto r = runbench(fn, src, dst, buffer_size, chunk_size, nstreams, true);
+                    auto r = runbench(fn, src, dst, buffer_size, segment_size, nstreams, true);
                     bw = std::get<0>(r);
                     auto valid = std::get<1>(r);
                     assert(valid);
@@ -179,7 +183,7 @@ int main() {
             for (int dst = 0; dst < device_count; ++dst) {
                 double bw = 0;
                 if (src < dst) {
-                    auto r = runbench(fn, src, dst, buffer_size, chunk_size, nstreams, true);
+                    auto r = runbench(fn, src, dst, buffer_size, segment_size, nstreams, true);
                     bw = std::get<0>(r);
                     auto valid = std::get<1>(r);
                     assert(valid);

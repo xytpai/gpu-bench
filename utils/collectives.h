@@ -23,12 +23,11 @@ int enable_p2p() {
 }
 
 struct GPUResources {
-    size_t buffer_size;
     size_t chunk_size;
-    int num_chunks;
+    unsigned char *buffers;
     int num_streams;
-    std::vector<std::vector<unsigned char *>> buffers;
     std::vector<gpuStream_t> streams;
+    size_t segment_size;
     // barrier
     int nblocks;
     int *barrier_flags;
@@ -37,6 +36,40 @@ struct GPUResources {
 };
 
 #define DEFAULT_NCTAS 256
+
+void allocate_resources(std::vector<GPUResources> &rs, size_t chunk_size, size_t segment_size, int streams_per_gpu, int nblocks_per_gpu = DEFAULT_NCTAS) {
+    int nranks = 0;
+    gpuGetDeviceCount(&nranks);
+    rs.resize(nranks);
+    for (int rank = 0; rank < nranks; ++rank) {
+        gpuSetDevice(rank);
+        rs[rank].chunk_size = chunk_size;
+        rs[rank].segment_size = segment_size;
+        gpuMalloc(&rs[rank].buffers, nranks * chunk_size);
+        rs[rank].num_streams = streams_per_gpu;
+        rs[rank].streams.resize(streams_per_gpu);
+        for (int s = 0; s < streams_per_gpu; ++s) {
+            gpuStreamCreate(&rs[rank].streams[s]);
+        }
+        // barrier
+        gpuMalloc(&rs[rank].barrier_flags, nblocks_per_gpu * nranks * sizeof(int));
+        gpuMalloc(&rs[rank].counter, sizeof(int));
+        gpuMalloc(&rs[rank].flag, sizeof(int));
+        rs[rank].nblocks = nblocks_per_gpu;
+    }
+}
+
+void delete_resources(std::vector<GPUResources> &rs) {
+    int nranks = rs.size();
+    for (int rank = 0; rank < nranks; ++rank) {
+        gpuSetDevice(rank);
+        gpuFree(rs[rank].buffers);
+        gpuFree(rs[rank].barrier_flags);
+        gpuFree(rs[rank].counter);
+        gpuFree(rs[rank].flag);
+        for (auto s : rs[rank].streams) gpuStreamDestroy(s);
+    }
+}
 
 class GPUWorkSpace {
 public:
@@ -47,16 +80,13 @@ public:
         gpuSetDevice(rank);
         int nranks = rs.size();
         auto &r = rs[rank];
-        int next_rank = (rank + 1) % nranks;
         gpuMemset(r.barrier_flags, 0, r.nblocks * nranks * sizeof(int));
         gpuMemset(r.counter, 0, sizeof(int));
         gpuMemset(r.flag, 0, sizeof(int));
         std::vector<void *> workspace(nranks * 3 + 2);
         for (int peer = 0; peer < nranks; ++peer) {
-            assert(r.buffers[peer].size() == 1);
-            workspace[peer] = r.buffers[peer][0];
+            workspace[peer] = (void *)rs[peer].buffers;
             workspace[nranks + peer] = (void *)rs[peer].barrier_flags;
-            workspace[2 * nranks + peer] = rs[next_rank].buffers[peer][0];
         }
         workspace[nranks * 3 + 0] = (void *)r.counter;
         workspace[nranks * 3 + 1] = (void *)r.flag;

@@ -2,20 +2,21 @@
 
 #include "collectives.h"
 
-void allocate_reduce_resources(std::vector<GPUResources> &rs, size_t data_bytes, int streams_per_gpu = 1, int nblocks_per_gpu = DEFAULT_NCTAS) {
+void allocate_reduce_resources(std::vector<GPUResources> &rs, size_t data_bytes, bool use_ring, int streams_per_gpu = 1, int nblocks_per_gpu = DEFAULT_NCTAS) {
     int ngpus = 0;
     gpuGetDeviceCount(&ngpus);
     rs.resize(ngpus);
-    assert(data_bytes % (ngpus * 4) == 0);
-    size_t chunk_size = (data_bytes + (size_t)ngpus - (size_t)1) / (size_t)ngpus;
-    size_t rounded_data_bytes = chunk_size * (size_t)ngpus;
+    int num_chunks = use_ring ? ngpus : nblocks_per_gpu;
+    assert(data_bytes % (num_chunks * 4) == 0);
+    size_t chunk_size = (data_bytes + (size_t)num_chunks - (size_t)1) / (size_t)num_chunks;
+    size_t rounded_data_bytes = chunk_size * (size_t)num_chunks;
     for (int rank = 0; rank < ngpus; ++rank) {
         gpuSetDevice(rank);
         rs[rank].buffer_size = rounded_data_bytes;
         rs[rank].chunk_size = chunk_size;
-        rs[rank].num_chunks = ngpus;
-        rs[rank].buffers.resize(ngpus);
-        for (int c = 0; c < ngpus; ++c) {
+        rs[rank].num_chunks = num_chunks;
+        rs[rank].buffers.resize(num_chunks);
+        for (int c = 0; c < num_chunks; ++c) {
             rs[rank].buffers[c].resize(1);
             gpuMalloc(&rs[rank].buffers[c][0], chunk_size);
         }
@@ -37,7 +38,7 @@ void delete_reduce_resources(std::vector<GPUResources> &rs) {
     for (int rank = 0; rank < ngpus; ++rank) {
         gpuSetDevice(rank);
         for (auto s : rs[rank].streams) gpuStreamDestroy(s);
-        for (int c = 0; c < ngpus; ++c) {
+        for (int c = 0; c < rs[rank].num_chunks; ++c) {
             gpuFree(rs[rank].buffers[c][0]);
         }
         gpuFree(rs[rank].barrier_flags);

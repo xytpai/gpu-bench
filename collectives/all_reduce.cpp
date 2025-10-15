@@ -68,6 +68,9 @@ __global__ void ring_all_reduce_kernel(void **workspace, int rank, size_t chunk_
 template <typename T>
 class AllReduceRing {
 public:
+    bool is_ring() const {
+        return true;
+    }
     void operator()(std::vector<GPUResources> &rs) {
         int nranks = rs.size();
         size_t chunk_size = rs[0].chunk_size;
@@ -97,10 +100,71 @@ public:
     }
 };
 
+template <typename T, int NRanks>
+__global__ void direct_all_reduce_kernel(void **workspace, int rank, size_t chunk_size) {
+    const int block_work_size = blockDim.x;
+    size_t length = chunk_size / sizeof(T);
+    size_t index_ = blockIdx.x * block_work_size + threadIdx.x;
+    SyncComm<NRanks> comm(workspace);
+    Barrier<NRanks> barrier(rank, comm);
+    // reduce scatter
+    for (size_t index = index_; index < length; index += block_work_size * gridDim.x) {
+        for (int peer = 0; peer < NRanks; ++peer) {
+        }
+    }
+
+    T *in = (T *)comm.current_comm_bufs[counter];
+    T *out = (T *)comm.next_comm_bufs[counter];
+
+    auto remaining = length - index;
+    __threadfence();
+    if (remaining < vec_size) {
+        for (auto i = index; i < length; i++) {
+            out[i] += in[i];
+        }
+    } else {
+        using vec_t = aligned_array<T, vec_size>;
+        auto in_vec = *reinterpret_cast<vec_t *>(const_cast<T *>(&in[index]));
+        auto out_vec_ptr = reinterpret_cast<vec_t *>(&out[index]);
+        auto out_vec = *out_vec_ptr;
+#pragma unroll
+        for (int i = 0; i < vec_size; ++i) {
+            out_vec.val[i] += in_vec.val[i];
+        }
+        *out_vec_ptr = out_vec;
+    }
+}
+counter = (counter + NRanks - 1) % NRanks;
+barrier.sync();
+}
+// all gather
+for (int ct = 1; ct < NRanks; ++ct) {
+    T *in = (T *)comm.current_comm_bufs[counter];
+    T *out = (T *)comm.next_comm_bufs[counter];
+    for (size_t index = index_; index < length; index += block_work_size * gridDim.x) {
+        auto remaining = length - index;
+        __threadfence();
+        if (remaining < vec_size) {
+            for (auto i = index; i < length; i++) {
+                out[i] = in[i];
+            }
+        } else {
+            using vec_t = aligned_array<T, vec_size>;
+            auto in_vec = reinterpret_cast<vec_t *>(const_cast<T *>(&in[index]));
+            auto out_vec = reinterpret_cast<vec_t *>(&out[index]);
+            *out_vec = *in_vec;
+        }
+    }
+    counter = (counter + NRanks - 1) % NRanks;
+    barrier.sync();
+}
+comm.update(barrier.m_flag_value);
+}
+
 template <typename T, typename func_t>
 std::tuple<double, bool, double> runbench(func_t fn, size_t data_bytes) {
     std::vector<GPUResources> rs;
-    allocate_reduce_resources(rs, data_bytes);
+    allocate_reduce_resources(rs, data_bytes, fn.is_ring());
     int ngpus = rs.size();
     for (int w = 0; w < 2; ++w) {
         fn(rs);
