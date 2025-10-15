@@ -93,10 +93,10 @@ std::tuple<double, bool> runbench(func_t fn, int src, int dst, size_t buffer_siz
     if (bidir) nbytes_total *= 2;
     double gbps = ((double)nbytes_total / seconds) / 1e9;
     std::vector<std::vector<bool>> mask(nranks);
-    for (int local = 0; local < nranks; ++local) {
-        mask[local].resize(nranks);
+    for (int rank = 0; rank < nranks; ++rank) {
+        mask[rank].resize(nranks);
         for (int peer = 0; peer < nranks; ++peer) {
-            mask[local][peer] = false;
+            mask[rank][peer] = false;
         }
     }
     mask[dst][src] = true;
