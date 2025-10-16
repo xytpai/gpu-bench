@@ -173,7 +173,7 @@ protected:
 #ifdef __CUDACC__
         asm volatile("st.global.release.sys.b32 [%1], %0;" ::"r"(flag), "l"(addr));
 #else
-        __atomic_store_n(addr, flag, __ATOMIC_SEQ_CST);
+        __hip_atomic_store(addr, flag, __ATOMIC_RELEASE, __HIP_MEMORY_SCOPE_SYSTEM);
 #endif
     }
 
@@ -184,7 +184,7 @@ protected:
                      : "=r"(flag)
                      : "l"(addr));
 #else
-        flag = __atomic_load_n(addr, __ATOMIC_SEQ_CST);
+        flag = __hip_atomic_load(addr, __ATOMIC_ACQUIRE, __HIP_MEMORY_SCOPE_SYSTEM);
 #endif
         return flag;
     }
