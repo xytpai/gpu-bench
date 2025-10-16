@@ -130,7 +130,7 @@ public:
             auto s = rs[rank].streams[0];
             dim3 threadsPerBlock(256);
             dim3 numBlocks(DEFAULT_NCTAS);
-            gpuSetDevice((rank + 1) % nranks);
+            // gpuSetDevice((rank + 1) % nranks);
             switch (nranks) {
             case 8: {
                 ring_all_gather_kernel<8><<<numBlocks, threadsPerBlock, 0, s>>>(
