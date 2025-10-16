@@ -41,12 +41,12 @@ int allocate_resources(std::vector<GPUResources> &rs, size_t chunk_size, size_t 
     int nranks = 0;
     gpuGetDeviceCount(&nranks);
     rs.resize(nranks);
-    alloc_size = alloc_size == 0 ? chunk_size : alloc_size;
+    alloc_size = alloc_size == 0 ? nranks * chunk_size : alloc_size;
     for (int rank = 0; rank < nranks; ++rank) {
         gpuSetDevice(rank);
         rs[rank].chunk_size = chunk_size;
         rs[rank].segment_size = segment_size;
-        gpuMalloc(&rs[rank].buffers, nranks * alloc_size);
+        gpuMalloc(&rs[rank].buffers, alloc_size);
         rs[rank].num_streams = streams_per_gpu;
         rs[rank].streams.resize(streams_per_gpu);
         for (int s = 0; s < streams_per_gpu; ++s) {

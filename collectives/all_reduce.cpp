@@ -50,37 +50,40 @@ void ring_worker(int rank, int nranks, HostBarrier &barrier, std::vector<GPUReso
     int recver = (rank + 1) % nranks;
     int sender = (rank + nranks - 1) % nranks;
     size_t chunk_size = rs[rank].chunk_size;
-    int copy_sid = 0;
+    int copy_stream_id = 0;
+    int compute_stream_sid = 1;
+    int produce_idx = 0;
+    int consume_idx = 1;
     for (int ct = 1; ct < nranks; ++ct) {
-        int ridx = counter;
-        int sidx = (ridx + nranks - 1) % nranks;
-        size_t roffset = ridx * chunk_size;
-        size_t roffset_copy = (nranks + ridx) * chunk_size;
-        size_t soffset = sidx * chunk_size;
-        size_t soffset_copy = (nranks + sidx) * chunk_size;
+        int sidx = (counter + nranks - 1) % nranks;
         memcpy_peer_async(
-            rs[rank].buffers + soffset_copy, rank,
-            rs[sender].buffers + soffset, sender,
-            chunk_size, rs[rank].streams[copy_sid],
+            rs[rank].buffers + (nranks + produce_idx) * chunk_size, rank,
+            rs[sender].buffers + sidx * chunk_size, sender,
+            chunk_size, rs[rank].streams[copy_stream_id],
             p2p);
-        reduce_kernel<T, vec_size, 1>(
-            (T *)(rs[rank].buffers + soffset), rank,
-            (T *)(rs[rank].buffers + soffset_copy), rank,
-            chunk_size / sizeof(T), rs[rank].streams[copy_sid]);
-        counter = sidx;
-        gpuStreamSynchronize(rs[rank].streams[copy_sid]);
+        produce_idx ^= 1;
+        consume_idx ^= 1;
+        gpuStreamSynchronize(rs[rank].streams[copy_stream_id]);
+        gpuStreamSynchronize(rs[rank].streams[compute_stream_sid]);
         barrier.wait();
+        reduce_kernel<T, vec_size, 1>(
+            (T *)(rs[rank].buffers + sidx * chunk_size), rank,
+            (T *)(rs[rank].buffers + (nranks + consume_idx) * chunk_size), rank,
+            chunk_size / sizeof(T), rs[rank].streams[copy_stream_id]);
+        counter = sidx;
     }
+    gpuStreamSynchronize(rs[rank].streams[compute_stream_sid]);
+    barrier.wait();
     for (int ct = 1; ct < nranks; ++ct) {
         int ridx = counter;
         size_t offset = ridx * chunk_size;
         memcpy_peer_async(
             rs[recver].buffers + offset, recver,
             rs[rank].buffers + offset, rank,
-            chunk_size, rs[recver].streams[copy_sid],
+            chunk_size, rs[recver].streams[copy_stream_id],
             p2p);
         counter = (ridx + nranks - 1) % nranks;
-        gpuStreamSynchronize(rs[recver].streams[copy_sid]);
+        gpuStreamSynchronize(rs[recver].streams[copy_stream_id]);
         barrier.wait();
     }
 }
@@ -110,7 +113,10 @@ std::tuple<double, bool, double> runbench(int nranks, func_t fn, size_t data_byt
     std::vector<GPUResources> rs;
     assert(data_bytes % nranks == 0);
     size_t chunk_size = data_bytes / nranks;
-    allocate_resources(rs, chunk_size, /*nsegments*/ 1, /*nstreams*/ nranks, /*alloc size*/ chunk_size * 2);
+    allocate_resources(rs, chunk_size,
+                       /*segment_size*/ chunk_size,
+                       /*nstreams*/ 2,
+                       /*alloc size*/ (nranks + 2) * chunk_size);
     for (int w = 0; w < 2; ++w) {
         fn(rs);
     }
