@@ -3,6 +3,9 @@
 #include <iostream>
 #include <stdlib.h>
 #include <time.h>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
 
 #include "collectives.h"
 #include "collectives_gather.h"
@@ -55,3 +58,31 @@ int randint_scalar(const int lower, const int upper) {
     int diff = upper - lower;
     return lower + (rand() % diff);
 }
+
+class HostBarrier {
+public:
+    explicit HostBarrier(int count) :
+        count(count), arrived(0), generation(0) {
+    }
+    void wait() {
+        std::unique_lock<std::mutex> lock(mtx);
+        int gen = generation;
+        if (++arrived == count) {
+            arrived = 0;
+            generation++;
+            cv.notify_all();
+        } else {
+            cv.wait(lock, [&] { return gen != generation; });
+        }
+    }
+    int gen() const {
+        return generation;
+    }
+    std::mutex mtx;
+
+private:
+    std::condition_variable cv;
+    int count;
+    int arrived;
+    int generation;
+};

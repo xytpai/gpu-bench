@@ -113,9 +113,8 @@ struct SyncComm {
         flag_ptr = &reinterpret_cast<int *>(workspace[NRanks * 3])[1];
         flag_value = *flag_ptr;
         for (int r = 0; r < NRanks; ++r) {
-            current_comm_bufs[r] = workspace[r];
+            comm_bufs[r] = workspace[r];
             barrier_flags[r] = workspace[NRanks + r];
-            next_comm_bufs[r] = workspace[2 * NRanks + r];
         }
         __syncthreads();
         if (threadIdx.x == 0) {
@@ -134,8 +133,7 @@ struct SyncComm {
 
     int *counter_ptr;
     int *flag_ptr;
-    void *current_comm_bufs[NRanks];
-    void *next_comm_bufs[NRanks];
+    void *comm_bufs[NRanks];
     void *barrier_flags[NRanks];
     int flag_value;
 };
