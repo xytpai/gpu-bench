@@ -153,6 +153,41 @@ public:
     }
 };
 
+void worker(int rank, int nranks, HostBarrier &barrier, std::vector<GPUResources> &rs, bool p2p) {
+    int counter = rank;
+    int recver = (rank + 1) % nranks;
+    size_t chunk_size = rs[rank].chunk_size;
+    for (int ct = 1; ct < nranks; ++ct) {
+        size_t offset = counter * chunk_size;
+        memcpy_peer_async(rs[recver].buffers + offset, recver,
+                          rs[rank].buffers + offset, rank,
+                          chunk_size, rs[recver].streams[0],
+                          p2p);
+        counter = (counter + nranks - 1) % nranks;
+        gpuStreamSynchronize(rs[recver].streams[0]);
+        barrier.wait();
+    }
+}
+
+class AllGatherRingMultiThread {
+public:
+    AllGatherRingMultiThread(bool p2p) :
+        p2p_(p2p) {
+    }
+    void operator()(std::vector<GPUResources> &rs) {
+        int nranks = rs.size();
+        HostBarrier barrier(nranks);
+        std::vector<std::thread> threads;
+        for (int rank = 0; rank < nranks; ++rank) {
+            threads.emplace_back(worker, rank, nranks, std::ref(barrier), std::ref(rs), p2p_);
+        }
+        for (auto &t : threads) t.join();
+    }
+
+private:
+    bool p2p_;
+};
+
 template <typename func_t>
 std::tuple<double, bool, double> runbench(func_t fn, size_t buffer_size, size_t segment_size, int nstreams) {
     std::vector<GPUResources> rs;
@@ -185,6 +220,14 @@ int main() {
     std::cout << "nranks: " << nranks << "\n";
     size_t buffer_size = (size_t)1024 * 1024 * 1024;
     size_t nchunks_ring = 2;
+    {
+        std::cout << "======== 1GB p2p all gather ring multi-thread test ========\n";
+        AllGatherRingMultiThread fn(true);
+        auto [bw, valid, seconds] = runbench(fn, buffer_size, 1, 1);
+        std::cout << "Total: " << bw << " GBps --- val:" << valid << "\n";
+        std::cout << "Latency: " << seconds * 1000000 << " us\n";
+        std::cout << "Per GPU: " << bw / nranks * 2 << " GBps\n";
+    }
     {
         std::cout << "======== 1GB barrier all gather ring test ========\n";
         AllGatherRingBarrier fn;
