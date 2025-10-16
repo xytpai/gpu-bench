@@ -90,34 +90,32 @@ private:
 
 template <int NRanks, int vec_size = 4>
 __global__ void ring_all_gather_kernel(void **workspace, int rank, size_t buffer_size) {
-    SyncComm<NRanks> comm(workspace);
-    Barrier<NRanks> barrier(rank, comm);
     const int block_work_size = blockDim.x * vec_size;
     int counter = rank;
+    SyncComm<NRanks> comm(workspace);
+    Barrier<NRanks> barrier(rank, comm);
     int next_rank = (rank + 1) % NRanks;
     for (int ct = 1; ct < NRanks; ++ct) {
-        size_t index = blockIdx.x * block_work_size + threadIdx.x * vec_size;
-        unsigned char *in = (unsigned char *)comm.comm_bufs[next_rank] + counter * buffer_size;
+        size_t index_ = blockIdx.x * block_work_size + threadIdx.x * vec_size;
+        unsigned char *in = (unsigned char *)comm.comm_bufs[rank] + counter * buffer_size;
         unsigned char *out = (unsigned char *)comm.comm_bufs[next_rank] + counter * buffer_size;
-        while (true) {
+        for (size_t index = index_; index < buffer_size; index += block_work_size * gridDim.x) {
             auto remaining = buffer_size - index;
             if (remaining < vec_size) {
                 for (auto i = index; i < buffer_size; i++) {
                     out[i] = in[i];
                 }
-                break;
             } else {
                 using vec_t = aligned_array<unsigned char, vec_size>;
                 auto in_vec = reinterpret_cast<vec_t *>(const_cast<unsigned char *>(&in[index]));
                 auto out_vec = reinterpret_cast<vec_t *>(&out[index]);
                 *out_vec = *in_vec;
             }
-            index += blockDim.x * vec_size;
         }
         counter = (counter + NRanks - 1) % NRanks;
         barrier.sync();
-        comm.update(barrier.m_flag_value);
     }
+    comm.update(barrier.m_flag_value);
 }
 
 class AllGatherRingBarrier {
@@ -125,16 +123,24 @@ public:
     void operator()(std::vector<GPUResources> &rs) {
         int nranks = rs.size();
         int chunk_size = rs[0].chunk_size;
-        dim3 threadsPerBlock(64);
-        dim3 numBlocks(256);
-        std::vector<GPUWorkSpace> workers(nranks);
+        std::vector<GPUWorkSpace> workspaces(nranks);
         for (int rank = 0; rank < nranks; ++rank) {
-            workers[rank].init(rs, rank);
-        }
-        for (int rank = 0; rank < nranks; ++rank) {
-            auto s = rs[(rank + 1) % nranks].streams[0];
-            ring_all_gather_kernel<8><<<numBlocks, threadsPerBlock, 0, s>>>(
-                workers[rank].workspace(), rank, chunk_size);
+            workspaces[rank].init(rs, rank);
+            auto s = rs[rank].streams[0];
+            dim3 threadsPerBlock(256);
+            dim3 numBlocks(DEFAULT_NCTAS);
+            switch (nranks) {
+            case 8: {
+                ring_all_gather_kernel<8><<<numBlocks, threadsPerBlock, 0, s>>>(
+                    workspaces[rank].workspace(), rank, chunk_size);
+            } break;
+            case 4: {
+                ring_all_gather_kernel<4><<<numBlocks, threadsPerBlock, 0, s>>>(
+                    workspaces[rank].workspace(), rank, chunk_size);
+            } break;
+            default:
+                return;
+            }
         }
         for (int g = 0; g < nranks; ++g) {
             gpuSetDevice(g);
