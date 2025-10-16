@@ -44,96 +44,61 @@ void reduce_kernel(T *dst, int dst_dev, const T *src, int src_dev, size_t n, gpu
 }
 
 template <typename T>
-class AllReduceRing {
+void ring_worker(int rank, int nranks, HostBarrier &barrier, std::vector<GPUResources> &rs, bool p2p) {
+    constexpr int vec_size = 16 / sizeof(T);
+    int counter = rank;
+    int recver = (rank + 1) % nranks;
+    int sender = (rank + nranks - 1) % nranks;
+    size_t chunk_size = rs[rank].chunk_size;
+    int copy_sid = 0;
+    for (int ct = 1; ct < nranks; ++ct) {
+        int ridx = counter;
+        int sidx = (ridx + nranks - 1) % nranks;
+        size_t roffset = ridx * chunk_size;
+        size_t roffset_copy = (nranks + ridx) * chunk_size;
+        size_t soffset = sidx * chunk_size;
+        size_t soffset_copy = (nranks + sidx) * chunk_size;
+        memcpy_peer_async(
+            rs[rank].buffers + soffset_copy, rank,
+            rs[sender].buffers + soffset, sender,
+            chunk_size, rs[rank].streams[copy_sid],
+            p2p);
+        reduce_kernel<T, vec_size, 1>(
+            (T *)(rs[rank].buffers + soffset), rank,
+            (T *)(rs[rank].buffers + soffset_copy), rank,
+            chunk_size / sizeof(T), rs[rank].streams[copy_sid]);
+        counter = sidx;
+        gpuStreamSynchronize(rs[rank].streams[copy_sid]);
+        barrier.wait();
+    }
+    for (int ct = 1; ct < nranks; ++ct) {
+        int ridx = counter;
+        size_t offset = ridx * chunk_size;
+        memcpy_peer_async(
+            rs[recver].buffers + offset, recver,
+            rs[rank].buffers + offset, rank,
+            chunk_size, rs[recver].streams[copy_sid],
+            p2p);
+        counter = (ridx + nranks - 1) % nranks;
+        gpuStreamSynchronize(rs[recver].streams[copy_sid]);
+        barrier.wait();
+    }
+}
+
+template <typename T>
+class AllReduceRingMultiThread {
 public:
-    AllReduceRing(bool p2p) :
+    AllReduceRingMultiThread(bool p2p) :
         p2p_(p2p) {
     }
     void operator()(std::vector<GPUResources> &rs) {
-        constexpr int vec_size = 16 / sizeof(T);
         int nranks = rs.size();
-        size_t chunk_size = rs[0].chunk_size;
-        size_t chunk_len = chunk_size / sizeof(T);
-        int num_streams = rs[0].num_streams;
-        std::vector<int> counters(nranks);
-        for (int i = 0; i < nranks; ++i) {
-            counters[i] = i;
+        HostBarrier barrier(nranks);
+        std::vector<std::thread> threads;
+        for (int rank = 0; rank < nranks; ++rank) {
+            threads.emplace_back(ring_worker<T>, rank, nranks, std::ref(barrier), std::ref(rs), p2p_);
         }
-        int copy_sid = 0;
-        int compute_sid = 1;
-        for (int ct = 1; ct < nranks; ++ct) {
-            for (int rank = 0; rank < nranks; ++rank) {
-                int recver = (rank + 1) % nranks;
-                int sender = (rank + nranks - 1) % nranks;
-                int ridx = counters[rank];
-                int sidx = (ridx + nranks - 1) % nranks;
-                size_t roffset = ridx * chunk_size;
-                size_t roffset_copy = (nranks + ridx) * chunk_size;
-                size_t soffset = sidx * chunk_size;
-                size_t soffset_copy = (nranks + sidx) * chunk_size;
-                // memcpy_peer_async(
-                //     rs[recver].buffers + roffset_copy, recver,
-                //     rs[rank].buffers + roffset, rank,
-                //     chunk_size, rs[recver].streams[0],
-                //     p2p_);
-                // memcpy_peer_async(
-                //     rs[recver].buffers + roffset_copy, recver,
-                //     rs[rank].buffers + roffset, rank,
-                //     chunk_size, rs[recver].streams[copy_sid],
-                //     p2p_);
-                memcpy_peer_async(
-                    rs[rank].buffers + soffset_copy, rank,
-                    rs[sender].buffers + soffset, sender,
-                    chunk_size, rs[rank].streams[copy_sid],
-                    p2p_);
-                reduce_kernel<T, vec_size, 1>(
-                    (T *)(rs[rank].buffers + soffset), rank,
-                    (T *)(rs[rank].buffers + soffset_copy), rank,
-                    chunk_len, rs[rank].streams[copy_sid]);
-                counters[rank] = sidx;
-            }
-            for (int r = 0; r < nranks; ++r) {
-                gpuSetDevice(r);
-                gpuDeviceSynchronize();
-            }
-        }
-        // #ifdef __CUDACC__
-        // for (int ct = 1; ct < nranks; ++ct) {
-        //     for (int rank = 0; rank < nranks; ++rank) {
-        //         int recver = (rank + 1) % nranks;
-        //         int ridx = counters[rank];
-        //         size_t offset = ridx * chunk_size;
-        //         memcpy_peer_async(
-        //             rs[recver].buffers + offset, recver,
-        //             rs[rank].buffers + offset, rank,
-        //             chunk_size, rs[recver].streams[0],
-        //             p2p_);
-        //         counters[rank] = (ridx + nranks - 1) % nranks;
-        //     }
-        //     for (int r = 0; r < nranks; ++r) {
-        //         gpuSetDevice(r);
-        //         gpuDeviceSynchronize();
-        //     }
-        // }
-        // #else
-        for (int local = 0; local < nranks; ++local) {
-            // peer -> local
-            int c = 0;
-            for (int peer = 0; peer < nranks; ++peer) {
-                if (peer == local - 1) continue;
-                int s = (c++) % num_streams;
-                int peer_cid = (peer + 1) % nranks;
-                memcpy_peer_async(rs[local].buffers + peer * chunk_size, local,
-                                  rs[peer].buffers + peer_cid * chunk_size, peer,
-                                  chunk_size, rs[local].streams[s],
-                                  p2p_);
-            }
-        }
-        for (int r = 0; r < nranks; ++r) {
-            gpuSetDevice(r);
-            gpuDeviceSynchronize();
-        }
-        // #endif
+        for (auto &t : threads) t.join();
     }
 
 private:
@@ -168,7 +133,7 @@ int main() {
     {
         std::cout << "======== 1GB all reduce ring test ========\n";
         using scalar_t = float;
-        AllReduceRing<scalar_t> fn(true);
+        AllReduceRingMultiThread<scalar_t> fn(true);
         auto [bw, valid, seconds] = runbench<scalar_t>(nranks, fn, data_size);
         std::cout << "Total: " << bw << " GBps --- val:" << valid << "\n";
         std::cout << "Latency: " << seconds * 1000000 << " us\n";
