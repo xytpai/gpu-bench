@@ -153,18 +153,20 @@ public:
     }
 };
 
-void worker(int rank, int nranks, HostBarrier &barrier, std::vector<GPUResources> &rs, bool p2p) {
+void ring_worker(int rank, int nranks, HostBarrier &barrier, std::vector<GPUResources> &rs, int stream, bool p2p) {
     int counter = rank;
     int recver = (rank + 1) % nranks;
     size_t chunk_size = rs[rank].chunk_size;
+    size_t num_streams = rs[rank].num_streams;
+    size_t segment_size = chunk_size / num_streams;
     for (int ct = 1; ct < nranks; ++ct) {
-        size_t offset = counter * chunk_size;
+        size_t offset = counter * chunk_size + stream * segment_size;
         memcpy_peer_async(rs[recver].buffers + offset, recver,
                           rs[rank].buffers + offset, rank,
-                          chunk_size, rs[recver].streams[0],
+                          segment_size, rs[recver].streams[stream],
                           p2p);
         counter = (counter + nranks - 1) % nranks;
-        gpuStreamSynchronize(rs[recver].streams[0]);
+        gpuStreamSynchronize(rs[recver].streams[stream]);
         barrier.wait();
     }
 }
@@ -176,10 +178,46 @@ public:
     }
     void operator()(std::vector<GPUResources> &rs) {
         int nranks = rs.size();
+        int num_streams = rs[0].num_streams;
+        HostBarrier barrier(nranks * num_streams);
+        std::vector<std::thread> threads;
+        for (int rank = 0; rank < nranks; ++rank) {
+            for (int s = 0; s < num_streams; ++s) {
+                threads.emplace_back(ring_worker, rank, nranks, std::ref(barrier), std::ref(rs), s, p2p_);
+            }
+        }
+        for (auto &t : threads) t.join();
+    }
+
+private:
+    bool p2p_;
+};
+
+void direct_worker(int rank, int nranks, HostBarrier &barrier, std::vector<GPUResources> &rs, bool p2p) {
+    size_t chunk_size = rs[rank].chunk_size;
+    for (int peer = 0; peer < nranks; ++peer) {
+        if (peer == rank) continue;
+        memcpy_peer_async(rs[rank].buffers + peer * chunk_size, rank,
+                          rs[peer].buffers + peer * chunk_size, peer,
+                          chunk_size, rs[rank].streams[peer],
+                          p2p);
+    }
+    for (int peer = 0; peer < nranks; ++peer) {
+        gpuStreamSynchronize(rs[rank].streams[peer]);
+    }
+}
+
+class AllGatherDirectMultiThread {
+public:
+    AllGatherDirectMultiThread(bool p2p) :
+        p2p_(p2p) {
+    }
+    void operator()(std::vector<GPUResources> &rs) {
+        int nranks = rs.size();
         HostBarrier barrier(nranks);
         std::vector<std::thread> threads;
         for (int rank = 0; rank < nranks; ++rank) {
-            threads.emplace_back(worker, rank, nranks, std::ref(barrier), std::ref(rs), p2p_);
+            threads.emplace_back(direct_worker, rank, nranks, std::ref(barrier), std::ref(rs), p2p_);
         }
         for (auto &t : threads) t.join();
     }
@@ -219,11 +257,19 @@ int main() {
     int nranks = enable_p2p();
     std::cout << "nranks: " << nranks << "\n";
     size_t buffer_size = (size_t)1024 * 1024 * 1024;
-    size_t nchunks_ring = 2;
     {
         std::cout << "======== 1GB p2p all gather ring multi-thread test ========\n";
         AllGatherRingMultiThread fn(true);
-        auto [bw, valid, seconds] = runbench(fn, buffer_size, 1, 1);
+        size_t nsegments = 4;
+        auto [bw, valid, seconds] = runbench(fn, buffer_size, buffer_size / nsegments, nsegments);
+        std::cout << "Total: " << bw << " GBps --- val:" << valid << "\n";
+        std::cout << "Latency: " << seconds * 1000000 << " us\n";
+        std::cout << "Per GPU: " << bw / nranks * 2 << " GBps\n";
+    }
+    {
+        std::cout << "======== 1GB p2p all gather direct multi-thread test ========\n";
+        AllGatherDirectMultiThread fn(true);
+        auto [bw, valid, seconds] = runbench(fn, buffer_size, buffer_size, nranks);
         std::cout << "Total: " << bw << " GBps --- val:" << valid << "\n";
         std::cout << "Latency: " << seconds * 1000000 << " us\n";
         std::cout << "Per GPU: " << bw / nranks * 2 << " GBps\n";
@@ -236,40 +282,40 @@ int main() {
         std::cout << "Latency: " << seconds * 1000000 << " us\n";
         std::cout << "Per GPU: " << bw / nranks * 2 << " GBps\n";
     }
-    {
-        std::cout << "======== 1GB p2p all gather direct test ========\n";
-        size_t segment_size = (size_t)1024 * 1024 * 1024;
-        AllGatherDirect fn(true);
-        auto [bw, valid, seconds] = runbench(fn, buffer_size, segment_size, nranks);
-        std::cout << "Total: " << bw << " GBps --- val:" << valid << "\n";
-        std::cout << "Latency: " << seconds * 1000000 << " us\n";
-        std::cout << "Per GPU: " << bw / nranks * 2 << " GBps\n";
-    }
-    {
-        std::cout << "======== 1GB p2p all gather ring test ========\n";
-        size_t segment_size = (size_t)1024 * 1024 * 1024 / nchunks_ring;
-        AllGatherRing fn(true);
-        auto [bw, valid, seconds] = runbench(fn, buffer_size, segment_size, nchunks_ring);
-        std::cout << "Total: " << bw << " GBps --- val:" << valid << "\n";
-        std::cout << "Latency: " << seconds * 1000000 << " us\n";
-        std::cout << "Per GPU: " << bw / nranks * 2 << " GBps\n";
-    }
-    {
-        std::cout << "======== 1GB uva all gather direct test ========\n";
-        size_t segment_size = (size_t)1024 * 1024 * 1024;
-        AllGatherDirect fn(false);
-        auto [bw, valid, seconds] = runbench(fn, buffer_size, segment_size, nranks);
-        std::cout << "Total: " << bw << " GBps --- val:" << valid << "\n";
-        std::cout << "Latency: " << seconds * 1000000 << " us\n";
-        std::cout << "Per GPU: " << bw / nranks * 2 << " GBps\n";
-    }
-    {
-        std::cout << "======== 1GB uva all gather ring test ========\n";
-        size_t segment_size = (size_t)1024 * 1024 * 1024 / nchunks_ring;
-        AllGatherRing fn(false);
-        auto [bw, valid, seconds] = runbench(fn, buffer_size, segment_size, nchunks_ring);
-        std::cout << "Total: " << bw << " GBps --- val:" << valid << "\n";
-        std::cout << "Latency: " << seconds * 1000000 << " us\n";
-        std::cout << "Per GPU: " << bw / nranks * 2 << " GBps\n";
-    }
+    // {
+    //     std::cout << "======== 1GB p2p all gather direct test ========\n";
+    //     size_t segment_size = (size_t)1024 * 1024 * 1024;
+    //     AllGatherDirect fn(true);
+    //     auto [bw, valid, seconds] = runbench(fn, buffer_size, segment_size, nranks);
+    //     std::cout << "Total: " << bw << " GBps --- val:" << valid << "\n";
+    //     std::cout << "Latency: " << seconds * 1000000 << " us\n";
+    //     std::cout << "Per GPU: " << bw / nranks * 2 << " GBps\n";
+    // }
+    // {
+    //     std::cout << "======== 1GB p2p all gather ring test ========\n";
+    //     size_t segment_size = (size_t)1024 * 1024 * 1024 / nchunks_ring;
+    //     AllGatherRing fn(true);
+    //     auto [bw, valid, seconds] = runbench(fn, buffer_size, segment_size, nchunks_ring);
+    //     std::cout << "Total: " << bw << " GBps --- val:" << valid << "\n";
+    //     std::cout << "Latency: " << seconds * 1000000 << " us\n";
+    //     std::cout << "Per GPU: " << bw / nranks * 2 << " GBps\n";
+    // }
+    // {
+    //     std::cout << "======== 1GB uva all gather direct test ========\n";
+    //     size_t segment_size = (size_t)1024 * 1024 * 1024;
+    //     AllGatherDirect fn(false);
+    //     auto [bw, valid, seconds] = runbench(fn, buffer_size, segment_size, nranks);
+    //     std::cout << "Total: " << bw << " GBps --- val:" << valid << "\n";
+    //     std::cout << "Latency: " << seconds * 1000000 << " us\n";
+    //     std::cout << "Per GPU: " << bw / nranks * 2 << " GBps\n";
+    // }
+    // {
+    //     std::cout << "======== 1GB uva all gather ring test ========\n";
+    //     size_t segment_size = (size_t)1024 * 1024 * 1024 / nchunks_ring;
+    //     AllGatherRing fn(false);
+    //     auto [bw, valid, seconds] = runbench(fn, buffer_size, segment_size, nchunks_ring);
+    //     std::cout << "Total: " << bw << " GBps --- val:" << valid << "\n";
+    //     std::cout << "Latency: " << seconds * 1000000 << " us\n";
+    //     std::cout << "Per GPU: " << bw / nranks * 2 << " GBps\n";
+    // }
 }
