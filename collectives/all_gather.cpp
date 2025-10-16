@@ -101,7 +101,9 @@ __global__ void ring_all_gather_kernel(void **workspace, int rank, size_t buffer
         unsigned char *out = (unsigned char *)comm.comm_bufs[next_rank] + counter * buffer_size;
         for (size_t index = index_; index < buffer_size; index += block_work_size * gridDim.x) {
             auto remaining = buffer_size - index;
+#ifdef __HIPCC__
             __threadfence();
+#endif
             if (remaining < vec_size) {
                 for (auto i = index; i < buffer_size; i++) {
                     out[i] = in[i];
@@ -128,7 +130,7 @@ public:
         for (int rank = 0; rank < nranks; ++rank) {
             workspaces[rank].init(rs, rank);
             auto s = rs[rank].streams[0];
-            dim3 threadsPerBlock(256);
+            dim3 threadsPerBlock(64);
             dim3 numBlocks(DEFAULT_NCTAS);
             // gpuSetDevice((rank + 1) % nranks);
             switch (nranks) {
