@@ -11,15 +11,13 @@ void reset_reduce_flags(std::vector<GPUResources> &rs) {
         size_t chunk_size = rs[rank].chunk_size;
         assert(chunk_size % element_bytes == 0);
         size_t chunk_len = chunk_size / element_bytes;
-        auto flags = new T[chunk_len];
-        for (auto i = 0; i < chunk_len; ++i) {
-            flags[i] = (T)rank;
-        }
+        T flags[1];
+        flags[0] = (T)rank;
         for (int c = 0; c < nranks; ++c) {
-            gpuMemcpy(rs[rank].buffers + c * chunk_size, flags, chunk_size, gpuMemcpyHostToDevice);
+            gpuMemcpy(rs[rank].buffers + c * chunk_size, flags, sizeof(T), gpuMemcpyHostToDevice);
+            gpuMemcpy(rs[rank].buffers + (c + 1) * chunk_size - sizeof(T), flags, sizeof(T), gpuMemcpyHostToDevice);
             gpuDeviceSynchronize();
         }
-        delete[] flags;
     }
 }
 
@@ -34,16 +32,16 @@ bool validate_reduce_flags(std::vector<GPUResources> &rs) {
         size_t chunk_size = rs[rank].chunk_size;
         assert(chunk_size % element_bytes == 0);
         size_t chunk_len = chunk_size / element_bytes;
-        auto results = new T[chunk_len];
+        T results[1];
         for (int c = 0; c < nranks; ++c) {
-            gpuMemcpy(results, rs[rank].buffers + c * chunk_size, chunk_size, gpuMemcpyDeviceToHost);
+            gpuMemcpy(results, rs[rank].buffers + c * chunk_size, sizeof(T), gpuMemcpyDeviceToHost);
             gpuDeviceSynchronize();
-            for (auto i = 0; i < chunk_len; ++i) {
-                if (results[i] != sum) valid = false;
-            }
+            if (results[0] != sum) valid = false;
+            gpuMemcpy(results, rs[rank].buffers + (c + 1) * chunk_size - sizeof(T), sizeof(T), gpuMemcpyDeviceToHost);
+            gpuDeviceSynchronize();
+            if (results[0] != sum) valid = false;
             // std::cout << results[0] << " ";
         }
-        delete[] results;
         // std::cout << "\n";
     }
     return valid;
