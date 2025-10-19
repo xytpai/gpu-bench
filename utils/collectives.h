@@ -44,6 +44,16 @@ void init_round_robin(std::vector<std::vector<int>> &matrix, int n) {
     }
 }
 
+void init_router(std::vector<std::vector<int>> &matrix, int n) {
+    matrix.resize(6);
+    matrix[0] = {0, 4, 7, 6, 5, 1, 2, 3};
+    matrix[1] = {0, 1, 3, 7, 5, 4, 6, 2};
+    matrix[2] = {3, 2, 1, 5, 6, 7, 4, 0};
+    matrix[3] = {2, 6, 4, 5, 7, 3, 1, 0};
+    matrix[4] = {0, 4, 7, 6, 5, 1, 2, 3};
+    matrix[5] = {3, 2, 1, 5, 6, 7, 4, 0};
+}
+
 void init_neighbor(
     std::vector<std::vector<int>> &matrix,
     std::vector<std::unordered_map<int, int>> &next,
@@ -86,7 +96,7 @@ int allocate_resources(std::vector<GPUResources> &rs, size_t chunk_size, size_t 
     rs.resize(nranks);
     alloc_size = alloc_size == 0 ? nranks * chunk_size : alloc_size;
     std::vector<std::vector<int>> rrmat;
-    init_round_robin(rrmat, nranks);
+    init_router(rrmat, nranks);
     for (int rank = 0; rank < nranks; ++rank) {
         init_neighbor(rrmat, rs[rank].next, rs[rank].prev);
         gpuSetDevice(rank);
