@@ -74,7 +74,8 @@ public:
 
 void ring_worker(int rank, int nranks, HostBarrier &barrier, std::vector<GPUResources> &rs, int stream, bool p2p) {
     int counter = rank;
-    int recver = (rank + 1) % nranks;
+    int r = stream % rs[rank].next.size();
+    int recver = rs[rank].next[r][rank];
     size_t chunk_size = rs[rank].chunk_size;
     size_t num_streams = rs[rank].num_streams;
     size_t segment_size = chunk_size / num_streams;
@@ -84,7 +85,7 @@ void ring_worker(int rank, int nranks, HostBarrier &barrier, std::vector<GPUReso
                           rs[rank].buffers + offset, rank,
                           segment_size, rs[recver].streams[stream],
                           p2p);
-        counter = (counter + nranks - 1) % nranks;
+        counter = rs[rank].prev[r][counter];
         gpuStreamSynchronize(rs[recver].streams[stream]);
         barrier.wait();
     }

@@ -3,6 +3,7 @@
 #include <cassert>
 #include <vector>
 #include <tuple>
+#include <unordered_map>
 
 #include "device_common.h"
 
@@ -22,7 +23,49 @@ int enable_p2p() {
     return ngpus;
 }
 
+void init_round_robin(std::vector<std::vector<int>> &matrix, int n) {
+    assert(n % 2 == 0);
+    std::vector<int> ring;
+    for (int i = 1; i < n; ++i) ring.push_back(i);
+    int m = ring.size();
+    int rounds = n - 1;
+    matrix.resize(rounds);
+    for (int r = 0; r < rounds; ++r) {
+        matrix[r].resize(n);
+        matrix[r][0] = 0;
+        matrix[r][1] = ring[0];
+        for (int i = 1; i <= (m - 1) / 2; ++i) {
+            matrix[r][i * 2 + 0] = ring[i];
+            matrix[r][i * 2 + 1] = ring[m - i];
+        }
+        int last = ring.back();
+        ring.pop_back();
+        ring.insert(ring.begin(), last);
+    }
+}
+
+void init_neighbor(
+    std::vector<std::vector<int>> &matrix,
+    std::vector<std::unordered_map<int, int>> &next,
+    std::vector<std::unordered_map<int, int>> &prev) {
+    int rounds = matrix.size();
+    int n = matrix[0].size();
+    next.resize(rounds);
+    prev.resize(rounds);
+    for (int r = 0; r < rounds; ++r) {
+        for (int i = 0; i < n; ++i) {
+            int src = matrix[r][i];
+            int dst = matrix[r][(i + 1) % n];
+            next[r][src] = dst;
+            prev[r][dst] = src;
+        }
+    }
+}
+
 struct GPUResources {
+    std::vector<std::unordered_map<int, int>> next;
+    std::vector<std::unordered_map<int, int>> prev;
+    // data
     size_t chunk_size;
     unsigned char *buffers;
     int num_streams;
@@ -42,7 +85,10 @@ int allocate_resources(std::vector<GPUResources> &rs, size_t chunk_size, size_t 
     gpuGetDeviceCount(&nranks);
     rs.resize(nranks);
     alloc_size = alloc_size == 0 ? nranks * chunk_size : alloc_size;
+    std::vector<std::vector<int>> rrmat;
+    init_round_robin(rrmat, nranks);
     for (int rank = 0; rank < nranks; ++rank) {
+        init_neighbor(rrmat, rs[rank].next, rs[rank].prev);
         gpuSetDevice(rank);
         rs[rank].chunk_size = chunk_size;
         rs[rank].segment_size = segment_size;
