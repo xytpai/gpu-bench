@@ -180,7 +180,11 @@ int main() {
     {
         std::cout << "======== 1GB p2p all gather ring multi-thread test ========\n";
         AllGatherRingMultiThread fn(true);
+#ifdef __HIPCC__
         size_t nsegments = 4;
+#else
+        size_t nsegments = 1;
+#endif
         auto [bw, valid, seconds] = runbench(fn, buffer_size, buffer_size / nsegments, nsegments);
         std::cout << "Total: " << bw << " GBps --- val:" << valid << "\n";
         std::cout << "Latency: " << seconds * 1000000 << " us\n";

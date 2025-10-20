@@ -45,13 +45,20 @@ void init_round_robin(std::vector<std::vector<int>> &matrix, int n) {
 }
 
 void init_router(std::vector<std::vector<int>> &matrix, int n) {
-    matrix.resize(6);
-    matrix[0] = {0, 4, 7, 6, 5, 1, 2, 3};
-    matrix[1] = {0, 1, 3, 7, 5, 4, 6, 2};
-    matrix[2] = {3, 2, 1, 5, 6, 7, 4, 0};
-    matrix[3] = {2, 6, 4, 5, 7, 3, 1, 0};
-    matrix[4] = {0, 4, 7, 6, 5, 1, 2, 3};
-    matrix[5] = {3, 2, 1, 5, 6, 7, 4, 0};
+    assert(n == 8 || n == 4);
+    if (n == 8) {
+        // 1
+        matrix.push_back({0, 4, 7, 6, 5, 1, 2, 3});
+        matrix.push_back({3, 2, 1, 5, 6, 7, 4, 0});
+        // 2
+        matrix.push_back({0, 1, 3, 7, 5, 4, 6, 2});
+        matrix.push_back({2, 6, 4, 5, 7, 3, 1, 0});
+    } else {
+        matrix.push_back({0, 1, 2, 3});
+        matrix.push_back({3, 2, 1, 0});
+        matrix.push_back({0, 3, 1, 2});
+        matrix.push_back({2, 1, 3, 0});
+    }
 }
 
 void init_neighbor(
