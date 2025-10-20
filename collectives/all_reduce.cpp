@@ -125,6 +125,59 @@ private:
     bool p2p_;
 };
 
+template <int NRanks, typename T, int vec_size = 1>
+__global__ void all_reduce_kernel(void **workspace, int rank, size_t chunk_size) {
+    const int block_work_size = blockDim.x * vec_size;
+    SyncComm<NRanks> comm(workspace);
+    Barrier<NRanks> barrier(rank, comm);
+    size_t index_ = blockIdx.x * block_work_size + threadIdx.x * vec_size;
+    size_t offset = rank * chunk_size / sizeof(T);
+    for (size_t index = index_; index < chunk_size / sizeof(T); index += block_work_size * gridDim.x) {
+        T acc = (T)0;
+        for (int peer = 0; peer < NRanks; ++peer) {
+            acc += reinterpret_cast<T *>(comm.comm_bufs[peer])[index + offset];
+        }
+        for (int peer = 0; peer < NRanks; ++peer) {
+            *(reinterpret_cast<T *>(comm.comm_bufs[peer]) + index + offset) = acc;
+        }
+    }
+    comm.update(barrier.m_flag_value);
+}
+
+template <typename T>
+class AllReduceDirect {
+public:
+    void operator()(std::vector<GPUResources> &rs) {
+        int nranks = rs.size();
+        int chunk_size = rs[0].chunk_size;
+        std::vector<GPUWorkSpace> workspaces(nranks);
+        for (int rank = 0; rank < nranks; ++rank) {
+            workspaces[rank].init(rs, rank);
+        }
+        for (int rank = 0; rank < nranks; ++rank) {
+            gpuSetDevice(rank);
+            dim3 threadsPerBlock(256);
+            dim3 numBlocks(DEFAULT_NCTAS);
+            switch (nranks) {
+            case 8: {
+                all_reduce_kernel<8, T><<<numBlocks, threadsPerBlock>>>(
+                    workspaces[rank].workspace(), rank, chunk_size);
+            } break;
+            case 4: {
+                all_reduce_kernel<4, T><<<numBlocks, threadsPerBlock>>>(
+                    workspaces[rank].workspace(), rank, chunk_size);
+            } break;
+            default:
+                return;
+            }
+        }
+        for (int g = 0; g < nranks; ++g) {
+            gpuSetDevice(g);
+            gpuDeviceSynchronize();
+        }
+    }
+};
+
 template <typename T, typename func_t>
 std::tuple<double, bool, double> runbench(int nranks, func_t fn, size_t data_bytes) {
     std::vector<GPUResources> rs;
@@ -157,6 +210,15 @@ int main() {
         std::cout << "======== 1GB all reduce ring test ========\n";
         using scalar_t = float;
         AllReduceRingMultiThread<scalar_t> fn(true);
+        auto [bw, valid, seconds] = runbench<scalar_t>(nranks, fn, data_size);
+        std::cout << "Total: " << bw << " GBps --- val:" << valid << "\n";
+        std::cout << "Latency: " << seconds * 1000000 << " us\n";
+        std::cout << "Per GPU: " << bw / nranks * 2 << " GBps\n";
+    }
+    {
+        std::cout << "======== 1GB all reduce direct test ========\n";
+        using scalar_t = float;
+        AllReduceDirect<scalar_t> fn;
         auto [bw, valid, seconds] = runbench<scalar_t>(nranks, fn, data_size);
         std::cout << "Total: " << bw << " GBps --- val:" << valid << "\n";
         std::cout << "Latency: " << seconds * 1000000 << " us\n";
