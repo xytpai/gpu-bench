@@ -47,12 +47,17 @@ void init_round_robin(std::vector<std::vector<int>> &matrix, int n) {
 void init_router(std::vector<std::vector<int>> &matrix, int n) {
     assert(n == 8 || n == 4);
     if (n == 8) {
-        // 1
         matrix.push_back({0, 4, 7, 6, 5, 1, 2, 3});
         matrix.push_back({3, 2, 1, 5, 6, 7, 4, 0});
-        // 2
         matrix.push_back({0, 1, 3, 7, 5, 4, 6, 2});
         matrix.push_back({2, 6, 4, 5, 7, 3, 1, 0});
+        // matrix.push_back({1, 3, 2, 0, 5, 7, 6, 4}); matrix.push_back({4, 6, 7, 5, 0, 2, 3, 1});
+        // matrix.push_back({1, 3, 2, 0, 5, 7, 4, 6}); matrix.push_back({6, 4, 7, 5, 0, 2, 3, 1});
+        // matrix.push_back({1, 2, 5, 3, 0, 6, 7, 4}); matrix.push_back({4, 7, 6, 0, 3, 5, 2, 1});
+        // matrix.push_back({1, 2, 5, 6, 3, 4, 0, 7}); matrix.push_back({7, 0, 4, 3, 6, 5, 2, 1});
+        // matrix.push_back({1, 0, 3, 7, 2, 4, 5, 6}); matrix.push_back({6, 5, 4, 2, 7, 3, 0, 1});
+        // matrix.push_back({1, 0, 7, 3, 6, 2, 4, 5}); matrix.push_back({5, 4, 2, 6, 3, 7, 0, 1});
+        // matrix.push_back({1, 5, 3, 4, 0, 6, 2, 7}); matrix.push_back({7, 2, 6, 0, 4, 3, 5, 1});
     } else {
         matrix.push_back({0, 1, 2, 3});
         matrix.push_back({3, 2, 1, 0});
