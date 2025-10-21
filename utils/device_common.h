@@ -4,6 +4,7 @@
 
 #include <hip/hip_runtime.h>
 #include <hip/hip_fp16.h>
+#include <hip/hip_cooperative_groups.h>
 
 #define gpuMemcpy hipMemcpy
 #define gpuMemset hipMemset
@@ -37,10 +38,13 @@
 #define gpuDevAttrMaxRegistersPerBlock hipDeviceAttributeMaxRegistersPerBlock
 #define gpuDevAttrMultiProcessorCount hipDeviceAttributeMultiprocessorCount
 
+#define gpuLaunchCooperativeKernel hipLaunchCooperativeKernel
+
 #else
 
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
+#include <cooperative_groups.h>
 
 #define gpuMemcpy cudaMemcpy
 #define gpuMemset cudaMemset
@@ -73,6 +77,8 @@
 #define gpuDeviceGetAttribute cudaDeviceGetAttribute
 #define gpuDevAttrMaxRegistersPerBlock cudaDevAttrMaxRegistersPerBlock
 #define gpuDevAttrMultiProcessorCount cudaDevAttrMultiProcessorCount
+
+#define gpuLaunchCooperativeKernel cudaLaunchCooperativeKernel
 
 #endif
 

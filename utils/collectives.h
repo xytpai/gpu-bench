@@ -153,14 +153,15 @@ public:
         gpuMemset(r.barrier_flags, 0, r.nblocks * nranks * sizeof(int));
         gpuMemset(r.counter, 0, sizeof(int));
         gpuMemset(r.flag, 0, sizeof(int));
-        std::vector<void *> workspace(nranks * 3 + 2);
+        std::vector<void *> workspace(nranks * 3 + 2 + sizeof(int));
         for (int peer = 0; peer < nranks; ++peer) {
             workspace[peer] = (void *)rs[peer].buffers;
             workspace[nranks + peer] = (void *)rs[peer].barrier_flags;
         }
         workspace[nranks * 3 + 0] = (void *)r.counter;
         workspace[nranks * 3 + 1] = (void *)r.flag;
-        gpuMalloc(&workspace_, (nranks * 3 + 2) * sizeof(void *));
+        *reinterpret_cast<int *>(workspace.data() + nranks * 3 + 2) = rank;
+        gpuMalloc(&workspace_, workspace.size() * sizeof(void *));
         gpuMemcpy(workspace_, workspace.data(), workspace.size() * sizeof(void *), gpuMemcpyHostToDevice);
     }
     ~GPUWorkSpace() {
@@ -179,6 +180,7 @@ struct SyncComm {
     __device__ __forceinline__ SyncComm(void **workspace) {
         counter_ptr = &reinterpret_cast<int *>(workspace[NRanks * 3])[0];
         flag_ptr = &reinterpret_cast<int *>(workspace[NRanks * 3])[1];
+        rank = *reinterpret_cast<int *>(workspace + NRanks * 3 + 2);
         flag_value = *flag_ptr;
         for (int r = 0; r < NRanks; ++r) {
             comm_bufs[r] = workspace[r];
@@ -201,9 +203,11 @@ struct SyncComm {
 
     int *counter_ptr;
     int *flag_ptr;
+    int *rank_ptr;
     void *comm_bufs[NRanks];
     void *barrier_flags[NRanks];
     int flag_value;
+    int rank;
 };
 
 template <int NRanks>

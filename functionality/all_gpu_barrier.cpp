@@ -3,16 +3,20 @@
 
 #include "utils.h"
 using namespace std;
+namespace cg = cooperative_groups;
 
 template <int NRanks>
-__global__ void all_gpu_barrier_test_kernel(void **workspace, int rank) {
+__global__ void all_gpu_barrier_test_kernel(void **workspace) {
     SyncComm<NRanks> comm(workspace);
+    int rank = comm.rank;
     Barrier<NRanks> barrier(rank, comm);
+    cg::grid_group grid = cg::this_grid();
     for (int i = 0; i < 4; ++i) {
-        if (blockIdx.x == 0 && threadIdx.x == 0) {
-            printf("This is rank %d from loop %d\n", rank, i);
+        if (threadIdx.x == 0) {
+            printf("This is rank %d block %d from loop %d\n", rank, blockIdx.x, i);
         }
         barrier.sync();
+        grid.sync();
     }
     comm.update(barrier.m_flag_value);
 }
@@ -28,15 +32,15 @@ void all_gpu_barrier_test() {
     for (int rank = 0; rank < nranks; ++rank) {
         gpuSetDevice(rank);
         dim3 threadsPerBlock(256);
-        dim3 numBlocks(256);
+        void **ptr = workspaces[rank].workspace();
+        void *args[] = {(void *)&ptr};
+        dim3 numBlocks(8);
         switch (nranks) {
         case 8: {
-            all_gpu_barrier_test_kernel<8><<<numBlocks, threadsPerBlock>>>(
-                workspaces[rank].workspace(), rank);
+            gpuLaunchCooperativeKernel(all_gpu_barrier_test_kernel<8>, numBlocks, threadsPerBlock, args, 0, nullptr);
         } break;
         case 4: {
-            all_gpu_barrier_test_kernel<4><<<numBlocks, threadsPerBlock>>>(
-                workspaces[rank].workspace(), rank);
+            gpuLaunchCooperativeKernel(all_gpu_barrier_test_kernel<4>, numBlocks, threadsPerBlock, args, 0, nullptr);
         } break;
         default:
             return;
@@ -49,6 +53,7 @@ void all_gpu_barrier_test() {
 }
 
 int main() {
+    enable_p2p();
     std::cout << "all gpu barrier test ... \n";
     all_gpu_barrier_test();
     std::cout << "ok\n";
