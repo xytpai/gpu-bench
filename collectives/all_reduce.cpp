@@ -7,46 +7,75 @@
 #include "utils.h"
 using namespace std;
 
-template <int NRanks, typename T, int vec_size = 2>
-__global__ void all_reduce_kernel(void **workspace, int rank, size_t chunk_size) {
-    const int block_work_size = blockDim.x * vec_size;
-    SyncComm<NRanks> comm(workspace);
-    Barrier<NRanks> barrier(rank, comm);
-    size_t index_ = blockIdx.x * block_work_size + threadIdx.x * vec_size;
-    size_t chunk_len = chunk_size / sizeof(T);
-    size_t offset = rank * chunk_len;
-    for (size_t index = index_; index < chunk_len; index += block_work_size * gridDim.x) {
-        auto remaining = chunk_len - index;
-        if (remaining < vec_size) {
-            // for (int index_v = index; index_v < chunk_len; ++index_v) {
-            //     size_t offset_element = (index_v + offset) * sizeof(T);
-            //     auto acc = (T)0;
-            //     for (int peer = 0; peer < NRanks; ++peer) {
-            //         acc += *reinterpret_cast<T *>((char *)comm.comm_bufs[peer] + offset_element);
-            //     }
-            //     for (int peer = 0; peer < NRanks; ++peer) {
-            //         *reinterpret_cast<T *>((char *)comm.comm_bufs[peer] + offset_element) = acc;
-            //     }
-            // }
-        } else {
-            using vec_t = aligned_array<T, vec_size>;
-            vec_t vec_out;
+template <typename T>
+__device__ __forceinline__ T warp_reduce_sum(T val) {
 #pragma unroll
-            for (int v = 0; v < vec_size; ++v) {
-                vec_out.val[v] = 0;
-            }
-            size_t offset_v = (index + offset) * sizeof(T);
-            for (int peer = 0; peer < NRanks; ++peer) {
-                auto vec_in = *reinterpret_cast<vec_t *>((char *)comm.comm_bufs[peer] + offset_v);
-#pragma unroll
-                for (int v = 0; v < vec_size; ++v) {
-                    vec_out.val[v] += vec_in.val[v];
-                }
-            }
-            for (int peer = 0; peer < NRanks; ++peer) {
-                *reinterpret_cast<vec_t *>((char *)comm.comm_bufs[peer] + offset_v) = vec_out;
-            }
+    for (int offset = (32 >> 1); offset > 0; offset >>= 1) {
+        val += __shfl_down(val, offset, 32);
+    }
+    return val;
+}
+
+template <typename T>
+__inline__ __device__ T block_reduce_sum(T val, T *shared, const int tid) {
+    const int w_tid = tid & 31;
+    const int wid = tid >> 5;
+    val = warp_reduce_sum(val);
+    if (w_tid == 0) {
+        shared[wid] = val;
+    }
+    __syncthreads();
+    if (wid == 0) {
+        val = shared[tid];
+        val = warp_reduce_sum(val);
+        if (tid == 0) {
+            shared[0] = val;
         }
+    }
+    __syncthreads();
+    return shared[0];
+}
+
+template <int NRanks, typename T>
+__global__ void all_reduce_norm_kernel(void **workspace, int rank, size_t count, double *global_acc) {
+    SyncComm<NRanks> comm(workspace);
+    const int globalTid = threadIdx.x + blockDim.x * (rank + blockIdx.x * NRanks);
+    const int globalNthreads = blockDim.x * gridDim.x * NRanks;
+    for (size_t offset = globalTid; offset < count; offset += globalNthreads) {
+        T v = (T)0;
+        for (int peer = 0; peer < NRanks; ++peer) {
+            v += reinterpret_cast<T *>(comm.comm_bufs[peer])[offset];
+        }
+        for (int peer = 0; peer < NRanks; ++peer) {
+            *(reinterpret_cast<T *>(comm.comm_bufs[peer]) + offset) = v;
+        }
+    }
+
+    // post ops
+    Barrier<NRanks> barrier(rank, comm);
+    barrier.sync();
+    const int localTid = threadIdx.x + blockDim.x * blockIdx.x;
+    const int localNthreads = blockDim.x * gridDim.x;
+    double sum = 0;
+    for (size_t offset = localTid; offset < count; offset += localNthreads) {
+        sum += reinterpret_cast<T *>(comm.comm_bufs[rank])[offset];
+    }
+    double __shared__ shared[512];
+    sum = block_reduce_sum<double>(sum, shared, threadIdx.x);
+    __threadfence();
+    atomicAdd(&global_acc[blockIdx.x], sum);
+    barrier.sync();
+    double __shared__ all_sum;
+    __threadfence();
+    if (threadIdx.x == 0) {
+        all_sum = global_acc[blockIdx.x];
+    }
+    SyncComm<NRanks> comm2(workspace);
+    comm2.update(0);
+    __syncthreads();
+    all_sum /= count;
+    for (size_t offset = localTid; offset < count; offset += localNthreads) {
+        *(reinterpret_cast<T *>(comm.comm_bufs[rank]) + offset) = (T)all_sum;
     }
     comm.update(barrier.m_flag_value);
 }
@@ -57,9 +86,13 @@ public:
     void operator()(std::vector<GPUResources> &rs) {
         int nranks = rs.size();
         int chunk_size = rs[0].chunk_size;
+        size_t count = (size_t)chunk_size * nranks / sizeof(T);
         std::vector<GPUWorkSpace> workspaces(nranks);
+        double *global_acc[16];
         for (int rank = 0; rank < nranks; ++rank) {
             workspaces[rank].init(rs, rank);
+            gpuMalloc(&global_acc[rank], DEFAULT_NCTAS * sizeof(double));
+            gpuMemset(global_acc[rank], 0, DEFAULT_NCTAS * sizeof(double));
         }
         for (int rank = 0; rank < nranks; ++rank) {
             gpuSetDevice(rank);
@@ -67,12 +100,12 @@ public:
             dim3 numBlocks(DEFAULT_NCTAS);
             switch (nranks) {
             case 8: {
-                all_reduce_kernel<8, T><<<numBlocks, threadsPerBlock>>>(
-                    workspaces[rank].workspace(), rank, chunk_size);
+                all_reduce_norm_kernel<8, T><<<numBlocks, threadsPerBlock>>>(
+                    workspaces[rank].workspace(), rank, count, global_acc[rank]);
             } break;
             case 4: {
-                all_reduce_kernel<4, T><<<numBlocks, threadsPerBlock>>>(
-                    workspaces[rank].workspace(), rank, chunk_size);
+                all_reduce_norm_kernel<4, T><<<numBlocks, threadsPerBlock>>>(
+                    workspaces[rank].workspace(), rank, count, global_acc[rank]);
             } break;
             default:
                 return;
@@ -88,7 +121,7 @@ public:
 template <typename T, typename func_t>
 std::tuple<double, bool, double> runbench(int nranks, func_t fn, size_t data_bytes) {
     std::vector<GPUResources> rs;
-    // assert(data_bytes % nranks == 0);
+    assert(data_bytes % nranks == 0);
     size_t chunk_size = data_bytes / nranks;
     allocate_resources(rs, chunk_size, chunk_size, 1);
     for (int w = 0; w < 2; ++w) {
@@ -109,7 +142,7 @@ std::tuple<double, bool, double> runbench(int nranks, func_t fn, size_t data_byt
 int main() {
     int nranks = enable_p2p();
     std::cout << "nranks: " << nranks << "\n";
-    size_t data_size = (size_t)1024 * 1024 * 1024 + 4;
+    size_t data_size = (size_t)1024 * 1024 * 1024;
     {
         std::cout << "======== 1GB all reduce direct test ========\n";
         using scalar_t = float;
