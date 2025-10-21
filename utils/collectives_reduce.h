@@ -3,7 +3,7 @@
 #include "collectives.h"
 
 template <typename T>
-void reset_reduce_flags(std::vector<GPUResources> &rs, bool strict = true) {
+void reset_reduce_flags(std::vector<GPUResources> &rs, bool strict = false) {
     auto element_bytes = sizeof(T);
     int nranks = rs.size();
     for (int rank = 0; rank < nranks; ++rank) {
@@ -53,9 +53,9 @@ bool validate_reduce_flags(std::vector<GPUResources> &rs, bool strict = false) {
                 gpuDeviceSynchronize();
 
                 if (std::abs(results[1] - target) / target > 0.01) valid = false;
-                std::cout << results[1] << " ";
+                // std::cout << results[1] << " ";
             }
-            std::cout << "\n";
+            // std::cout << "\n";
         } else {
             auto results = new T[chunk_len];
             for (int c = 0; c < nranks; ++c) {
