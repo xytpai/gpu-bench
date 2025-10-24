@@ -254,6 +254,7 @@ struct GPUResources {
     void *residual_out;
     void *norm_out;
     void *rms_gamma;
+    void *comm_bufs;
     // barrier
     int nblocks;
     int *barrier_flags;
@@ -275,7 +276,7 @@ public:
         gpuMemset(r.flag, 0, sizeof(int));
         std::vector<void *> workspace(nranks * 3 + 2);
         for (int peer = 0; peer < nranks; ++peer) {
-            workspace[peer] = (void *)rs[peer].allreduce_in;
+            workspace[peer] = (void *)rs[peer].comm_bufs;
             workspace[nranks + peer] = (void *)rs[peer].barrier_flags;
         }
         workspace[nranks * 3 + 0] = (void *)r.counter;
@@ -310,6 +311,7 @@ int allocate_resources(std::vector<GPUResources> &rs, int size, int hidden_dim) 
         gpuMalloc(&rs[rank].residual_out, size * sizeof(T));
         gpuMalloc(&rs[rank].norm_out, size * sizeof(T));
         gpuMalloc(&rs[rank].rms_gamma, hidden_dim * sizeof(T));
+        gpuMalloc(&rs[rank].comm_bufs, 2 * size * sizeof(T));
         // barrier
         gpuMalloc(&rs[rank].barrier_flags, NBLOCKS_PER_GPU * nranks * sizeof(int));
         gpuMalloc(&rs[rank].counter, sizeof(int));
@@ -328,6 +330,7 @@ void delete_resources(std::vector<GPUResources> &rs) {
         gpuFree(rs[rank].residual_out);
         gpuFree(rs[rank].norm_out);
         gpuFree(rs[rank].rms_gamma);
+        gpuFree(rs[rank].comm_bufs);
         // barrier
         gpuFree(rs[rank].barrier_flags);
         gpuFree(rs[rank].counter);
@@ -370,15 +373,16 @@ void allreduce_rmsnorm_ref(
             auto data = allreduce_out[offset_token + h];
             x2 += data * data;
         }
+        double beta = (double)1.0 / std::sqrt(x2 / hidden_dim + eps);
         for (int h = 0; h < hidden_dim; ++h) {
-            norm_out[offset_token + h] = allreduce_out[offset_token + h] / std::sqrt(x2 + eps);
+            norm_out[offset_token + h] = allreduce_out[offset_token + h] * beta;
             norm_out[offset_token + h] *= rms_gamma[h];
         }
     }
     delete[] allreduce_out;
 }
 
-void runbench(int nranks, int size, int hidden_dim, float eps = 1e-6) {
+void runbench(int nranks, int size, int hidden_dim, float eps = 1e-6, float atol = 0.1) {
     // input
     auto allreduce_in = new float[nranks * size];
     auto residual_in = new float[size];
@@ -387,6 +391,8 @@ void runbench(int nranks, int size, int hidden_dim, float eps = 1e-6) {
     // output
     auto residual_out_ref = new float[size];
     auto norm_out_ref = new float[size];
+    auto residual_out = new float[size];
+    auto norm_out = new float[size];
 
     // gen data
     for (int i = 0; i < nranks * size; ++i) {
@@ -445,11 +451,35 @@ void runbench(int nranks, int size, int hidden_dim, float eps = 1e-6) {
         allreduce_in, residual_in, rms_gamma,
         size, hidden_dim, nranks, residual_out_ref, norm_out_ref, eps);
 
+    bool val = true;
+    int print_count = 0;
+    for (int r = 0; r < nranks; ++r) {
+        gpuSetDevice(r);
+        gpuMemcpy(residual_out, rs[r].residual_out, size * sizeof(float), gpuMemcpyDeviceToHost);
+        gpuMemcpy(norm_out, rs[r].norm_out, size * sizeof(float), gpuMemcpyDeviceToHost);
+        gpuDeviceSynchronize();
+        for (int i = 0; i < size; ++i) {
+            if (std::abs(residual_out[i] - residual_out_ref[i]) > atol) {
+                std::cout << "residual_out:" << residual_out[i] << ", residual_out_ref:" << residual_out_ref[i] << "\n";
+                if (++print_count == 100) break;
+                val = false;
+            }
+            if (std::abs(norm_out[i] - norm_out_ref[i]) > atol) {
+                std::cout << "norm_out:" << norm_out[i] << ", norm_out_ref:" << norm_out_ref[i] << "\n";
+                if (++print_count == 100) break;
+                val = false;
+            }
+        }
+    }
+    std::cout << "validation:" << val << "\n";
+
     delete[] allreduce_in;
     delete[] residual_in;
     delete[] rms_gamma;
     delete[] residual_out_ref;
     delete[] norm_out_ref;
+    delete[] residual_out;
+    delete[] norm_out;
     delete_resources(rs);
 }
 
