@@ -16,6 +16,7 @@ namespace allreduce_fusion {
 namespace details {
 
 static constexpr int kBytesPerAccess = 16;
+static constexpr int kOneShotMaxToken = 128;
 
 } // namespace details
 
@@ -210,6 +211,12 @@ struct alignas(sizeof(T) * vec_size) vec_t {
     __device__ __forceinline__ void store(T *ptr) {
         *reinterpret_cast<vec_t<T, vec_size> *>(ptr) = *this;
     }
+    __device__ __forceinline__ void fill(T val) {
+#pragma unroll
+        for (int i = 0; i < vec_size; ++i) {
+            data[i] = val;
+        }
+    }
 };
 
 template <typename T, uint32_t VEC_SIZE>
@@ -296,7 +303,128 @@ private:
     vec_t<T, VEC_SIZE> m_gamma_val;
 };
 
-template <typename T, int NRanks, bool Fp32Acc>
+template <typename T>
+struct neg_zero {
+    static constexpr T value = -T(0);
+};
+
+template <>
+struct neg_zero<half> {
+    static constexpr unsigned short neg_zero_bits = 0x8000U;
+    static constexpr __half value = __half_raw{neg_zero_bits};
+};
+
+template <>
+struct neg_zero<float> {
+    static constexpr unsigned int neg_zero_bits = 0x80000000U;
+    static constexpr float value = -0.0f;
+};
+
+template <typename T>
+__device__ static constexpr T neg_zero_v = neg_zero<T>::value;
+
+template <typename T>
+__device__ bool is_negative_zero(T) {
+    return false;
+}
+
+// float specialization
+template <>
+__device__ bool is_negative_zero<float>(float x) {
+    return (__float_as_int(x) == 0x80000000);
+}
+
+// double specialization
+template <>
+__device__ bool is_negative_zero<double>(double x) {
+    return (__double_as_longlong(x) == 0x8000000000000000ULL);
+}
+
+// __half specialization
+template <>
+__device__ bool is_negative_zero<__half>(__half x) {
+    return (__half_as_ushort(x) == 0x8000);
+}
+
+template <typename T, uint32_t VEC_SIZE>
+__device__ __forceinline__ bool has_neg_zero(const vec_t<T, VEC_SIZE> &vec) {
+#pragma unroll
+    for (int i = 0; i < VEC_SIZE; ++i) {
+        if (is_negative_zero(vec[i])) {
+            return true;
+        }
+    }
+    return false;
+}
+
+template <typename T, uint32_t VEC_SIZE>
+__device__ __forceinline__ void remove_neg_zero(vec_t<T, VEC_SIZE> &vec) {
+#pragma unroll
+    for (int i = 0; i < VEC_SIZE; ++i) {
+        vec[i] = (is_negative_zero(vec[i])) ? static_cast<T>(0.f) : vec[i];
+    }
+}
+
+template <typename T, int NRanks>
+__global__ void allreduce_fusion_kernel_oneshot_lamport(AllReduceFusionParams<T> params) {
+    static constexpr int VEC_SIZE = details::kBytesPerAccess / sizeof(T);
+    int token_id = blockIdx.x;
+    int access_id_in_token = threadIdx.x;
+    int token_stride = gridDim.x;
+    int access_id = token_id * params.hidden_dim / VEC_SIZE + access_id_in_token;
+    int access_stride = token_stride * params.hidden_dim / VEC_SIZE;
+    int tot_access = params.size / VEC_SIZE;
+    vec_t<T, VEC_SIZE> clear_vec;
+    clear_vec.fill(neg_zero_v<T>);
+    FusedOp<T> fused_op(params, access_id, access_id_in_token);
+
+    comm::LamportComm<NRanks> comm(params.workspace, params.rank);
+    int clear_access = comm.clear_size / VEC_SIZE;
+
+    for (int idx = access_id; idx < tot_access; idx += access_stride) {
+        vec_t<T, VEC_SIZE> val;
+        val.load(reinterpret_cast<T *>(params.allreduce_in) + idx * VEC_SIZE);
+        remove_neg_zero<T, VEC_SIZE>(val);
+#pragma unroll
+        for (int r = 0; r < NRanks; ++r) {
+            // Push data to other ranks
+            val.store(reinterpret_cast<T *>(comm.data_bufs[r]) + (params.rank * tot_access + idx) * VEC_SIZE);
+        }
+    }
+    for (int idx = access_id; idx < clear_access; idx += access_stride) {
+        // Clear comm buffer that previous kernel used
+        clear_vec.store(reinterpret_cast<T *>(comm.clear_buf) + idx * VEC_SIZE);
+    }
+
+    for (int idx = access_id, tidx = token_id; idx < tot_access;
+         idx += access_stride, tidx += token_stride) {
+        fused_op.update(idx);
+        vec_t<T, VEC_SIZE> vals[NRanks];
+        volatile bool done = false;
+
+        while (!done) {
+            done = true;
+            __threadfence();
+#pragma unroll
+            for (int r = 0; r < NRanks; ++r) {
+                // LDG.128 from local rank
+                vals[r].load(reinterpret_cast<T *>(comm.data_bufs[params.rank]) + (r * tot_access + idx) * VEC_SIZE);
+                done &= !has_neg_zero<T, VEC_SIZE>(vals[r]);
+            }
+        }
+
+#pragma unroll
+        for (int r = 1; r < NRanks; ++r) {
+            vec_add_<T, VEC_SIZE>(vals[0], vals[r]);
+        }
+
+        fused_op(vals[0], tidx);
+    }
+
+    comm.update(params.size * NRanks);
+}
+
+template <typename T, int NRanks>
 __global__ void allreduce_fusion_kernel_twoshot_sync(AllReduceFusionParams<T> params,
                                                      std::array<int, NRanks> begin_tokens,
                                                      std::array<int, NRanks> token_num_per_ranks) {
@@ -361,12 +489,21 @@ __global__ void allreduce_fusion_kernel_twoshot_sync(AllReduceFusionParams<T> pa
     comm.update(barrier.m_flag_value);
 }
 
-template <typename T, int NRanks, bool Fp32Acc = false>
+template <typename T, int NRanks>
 void allreduce_fusion_kernel_launcher(AllReduceFusionParams<T> const &params) {
     static constexpr int VEC_SIZE = details::kBytesPerAccess / sizeof(T);
     assert(params.size % params.hidden_dim == 0);
     assert(params.hidden_dim % VEC_SIZE == 0);
     int token_num = params.size / params.hidden_dim;
+
+    if (token_num <= details::kOneShotMaxToken) {
+        if (params.rank == 0) std::cout << "using oneshot\n";
+        dim3 threadsPerBlock(256);
+        dim3 numBlocks(NBLOCKS_PER_GPU);
+        allreduce_fusion_kernel_oneshot_lamport<T, NRanks><<<numBlocks, threadsPerBlock>>>(params);
+        return;
+    }
+
     std::array<int, NRanks> begin_tokens, token_num_per_ranks;
     int remaining_token = token_num % NRanks;
     int token_num_per_rank = token_num / NRanks;
@@ -382,7 +519,9 @@ void allreduce_fusion_kernel_launcher(AllReduceFusionParams<T> const &params) {
     dim3 numBlocks(NBLOCKS_PER_GPU);
     if (params.rank == 0)
         std::cout << "threadsPerBlock:" << threadsPerBlock.x << ", numBlocks:" << numBlocks.x << "\n";
-    allreduce_fusion_kernel_twoshot_sync<T, NRanks, Fp32Acc><<<numBlocks, threadsPerBlock>>>(params, begin_tokens, token_num_per_ranks);
+
+    if (params.rank == 0) std::cout << "using twoshot\n";
+    allreduce_fusion_kernel_twoshot_sync<T, NRanks><<<numBlocks, threadsPerBlock>>>(params, begin_tokens, token_num_per_ranks);
 }
 
 } // namespace allreduce_fusion
@@ -404,11 +543,13 @@ struct GPUResources {
     int *counter;
     int *flag;
     // lamport
+    void *lamport_data_bufs;
     int *lamport_flag;
     int *lamport_clear;
     int *lamport_comm_size;
 };
 
+template <typename T>
 class GPUWorkSpace {
 public:
     GPUWorkSpace() :
@@ -421,13 +562,29 @@ public:
         gpuMemset(r.barrier_flags, 0, r.nblocks * nranks * sizeof(int));
         gpuMemset(r.counter, 0, sizeof(int));
         gpuMemset(r.flag, 0, sizeof(int));
-        std::vector<void *> workspace(nranks * 3 + 2);
+        // lamport
+        gpuMemset(r.lamport_flag, 0, sizeof(int));
+        int sizes[1] = {nranks * r.size};
+        gpuMemcpy(r.lamport_clear, sizes, sizeof(int), gpuMemcpyHostToDevice);
+        gpuMemcpy(r.lamport_comm_size, sizes, sizeof(int), gpuMemcpyHostToDevice);
+        T *lamport_data_bufs = new T[nranks * r.size];
+        for (int i = 0; i < nranks * r.size; ++i) {
+            lamport_data_bufs[i] = allreduce_fusion::neg_zero_v<T>;
+        }
+        gpuMemcpy(r.lamport_data_bufs, lamport_data_bufs, nranks * r.size * sizeof(T), gpuMemcpyHostToDevice);
+        delete[] lamport_data_bufs;
+        std::vector<void *> workspace(nranks * 3 + 5);
         for (int peer = 0; peer < nranks; ++peer) {
             workspace[peer] = (void *)rs[peer].comm_bufs;
             workspace[nranks + peer] = (void *)rs[peer].barrier_flags;
+            // lamport
+            workspace[2 * nranks + peer] = (void *)rs[peer].lamport_data_bufs;
         }
         workspace[nranks * 3 + 0] = (void *)r.counter;
         workspace[nranks * 3 + 1] = (void *)r.flag;
+        workspace[nranks * 3 + 2] = (void *)r.lamport_flag;
+        workspace[nranks * 3 + 3] = (void *)r.lamport_comm_size;
+        workspace[nranks * 3 + 4] = (void *)r.lamport_clear;
         gpuMalloc(&workspace_, workspace.size() * sizeof(void *));
         gpuMemcpy(workspace_, workspace.data(), workspace.size() * sizeof(void *), gpuMemcpyHostToDevice);
         gpuDeviceSynchronize();
@@ -464,6 +621,11 @@ int allocate_resources(std::vector<GPUResources> &rs, int size, int hidden_dim) 
         gpuMalloc(&rs[rank].counter, sizeof(int));
         gpuMalloc(&rs[rank].flag, sizeof(int));
         rs[rank].nblocks = NBLOCKS_PER_GPU;
+        // lamport
+        gpuMalloc(&rs[rank].lamport_data_bufs, 3 * nranks * size * sizeof(T));
+        gpuMalloc(&rs[rank].lamport_flag, sizeof(int));
+        gpuMalloc(&rs[rank].lamport_clear, sizeof(int));
+        gpuMalloc(&rs[rank].lamport_comm_size, sizeof(int));
     }
     return nranks;
 }
@@ -482,6 +644,11 @@ void delete_resources(std::vector<GPUResources> &rs) {
         gpuFree(rs[rank].barrier_flags);
         gpuFree(rs[rank].counter);
         gpuFree(rs[rank].flag);
+        // lamport
+        gpuFree(rs[rank].lamport_data_bufs);
+        gpuFree(rs[rank].lamport_flag);
+        gpuFree(rs[rank].lamport_clear);
+        gpuFree(rs[rank].lamport_comm_size);
     }
 }
 
@@ -529,7 +696,7 @@ void allreduce_rmsnorm_ref(
     delete[] allreduce_out;
 }
 
-void runbench(int nranks, int size, int hidden_dim, float eps = 1e-6, float atol = 0.1) {
+void runbench(int nranks, int size, int hidden_dim, float eps = 1e-6, float atol = 0.0001) {
     // input
     auto allreduce_in = new float[nranks * size];
     auto residual_in = new float[size];
@@ -564,7 +731,7 @@ void runbench(int nranks, int size, int hidden_dim, float eps = 1e-6, float atol
         gpuDeviceSynchronize();
     }
 
-    std::vector<GPUWorkSpace> workspaces(nranks);
+    std::vector<GPUWorkSpace<float>> workspaces(nranks);
     for (int rank = 0; rank < nranks; ++rank) {
         workspaces[rank].init(rs, rank);
     }
@@ -599,22 +766,21 @@ void runbench(int nranks, int size, int hidden_dim, float eps = 1e-6, float atol
         size, hidden_dim, nranks, residual_out_ref, norm_out_ref, eps);
 
     bool val = true;
-    int print_count = 0;
     for (int r = 0; r < nranks; ++r) {
         gpuSetDevice(r);
         gpuMemcpy(residual_out, rs[r].residual_out, size * sizeof(float), gpuMemcpyDeviceToHost);
         gpuMemcpy(norm_out, rs[r].norm_out, size * sizeof(float), gpuMemcpyDeviceToHost);
         gpuDeviceSynchronize();
         for (int i = 0; i < size; ++i) {
-            if (std::abs(residual_out[i] - residual_out_ref[i]) > atol) {
+            if (std::isnan(residual_out[i]) || std::abs(residual_out[i] - residual_out_ref[i]) > atol) {
                 std::cout << "residual_out:" << residual_out[i] << ", residual_out_ref:" << residual_out_ref[i] << "\n";
-                if (++print_count == 100) break;
                 val = false;
+                break;
             }
-            if (std::abs(norm_out[i] - norm_out_ref[i]) > atol) {
+            if (std::isnan(norm_out[i]) || std::abs(norm_out[i] - norm_out_ref[i]) > atol) {
                 std::cout << "norm_out:" << norm_out[i] << ", norm_out_ref:" << norm_out_ref[i] << "\n";
-                if (++print_count == 100) break;
                 val = false;
+                break;
             }
         }
     }
@@ -634,9 +800,16 @@ void runbench(int nranks, int size, int hidden_dim, float eps = 1e-6, float atol
 
 int main() {
     int nranks = enable_p2p();
-    constexpr int num_tokens = 256;
-    constexpr int hidden_dim = 1024;
-    constexpr int size = num_tokens * hidden_dim;
-    test::runbench(nranks, size, hidden_dim);
-    std::cout << "ok\n";
+    {
+        constexpr int num_tokens = 55;
+        constexpr int hidden_dim = 1024;
+        constexpr int size = num_tokens * hidden_dim;
+        test::runbench(nranks, size, hidden_dim);
+    }
+    {
+        constexpr int num_tokens = 256;
+        constexpr int hidden_dim = 1024;
+        constexpr int size = num_tokens * hidden_dim;
+        test::runbench(nranks, size, hidden_dim);
+    }
 }
