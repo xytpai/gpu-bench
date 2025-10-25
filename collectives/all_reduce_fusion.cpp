@@ -26,7 +26,7 @@ template <typename T>
 __device__ __forceinline__ T warp_reduce_sum(T val) {
 #pragma unroll
     for (int offset = (32 >> 1); offset > 0; offset >>= 1) {
-        val += __shfl_down(val, offset, 32);
+        val += __shfl_xor(val, offset, 32);
     }
     return val;
 }
@@ -42,13 +42,11 @@ __inline__ __device__ T block_reduce_sum(T val) {
         shared[wid] = val;
     }
     __syncthreads();
-    if (tid == 0) {
-        for (int i = 1; i < blockDim.x / 32; ++i) {
-            shared[0] += shared[i];
-        }
-    }
+    bool is_mask = threadIdx.x < (blockDim.x / 32.f);
+    val = is_mask ? shared[w_tid] : (T)(0.0f);
     __syncthreads();
-    return shared[0];
+    val = warp_reduce_sum(val);
+    return val;
 }
 
 } // namespace block_utils
@@ -495,10 +493,12 @@ void allreduce_fusion_kernel_launcher(AllReduceFusionParams<T> const &params) {
     assert(params.size % params.hidden_dim == 0);
     assert(params.hidden_dim % VEC_SIZE == 0);
     int token_num = params.size / params.hidden_dim;
+    int threads_per_token = params.hidden_dim / VEC_SIZE;
+    int threads_per_block = threads_per_token;
 
     if (token_num <= details::kOneShotMaxToken) {
         if (params.rank == 0) std::cout << "using oneshot\n";
-        dim3 threadsPerBlock(256);
+        dim3 threadsPerBlock(threads_per_block);
         dim3 numBlocks(NBLOCKS_PER_GPU);
         allreduce_fusion_kernel_oneshot_lamport<T, NRanks><<<numBlocks, threadsPerBlock>>>(params);
         return;
@@ -513,8 +513,6 @@ void allreduce_fusion_kernel_launcher(AllReduceFusionParams<T> const &params) {
         if (params.rank == 0)
             std::cout << "rank:" << r << ", begin_tokens:" << begin_tokens[r] << ", token_num_per_ranks:" << token_num_per_ranks[r] << "\n";
     }
-    int threads_per_token = params.hidden_dim / VEC_SIZE;
-    int threads_per_block = threads_per_token;
     dim3 threadsPerBlock(threads_per_block);
     dim3 numBlocks(NBLOCKS_PER_GPU);
     if (params.rank == 0)
@@ -802,13 +800,13 @@ int main() {
     int nranks = enable_p2p();
     {
         constexpr int num_tokens = 55;
-        constexpr int hidden_dim = 1024;
+        constexpr int hidden_dim = 1024 - 4;
         constexpr int size = num_tokens * hidden_dim;
         test::runbench(nranks, size, hidden_dim);
     }
     {
         constexpr int num_tokens = 256;
-        constexpr int hidden_dim = 1024;
+        constexpr int hidden_dim = 512 - 4;
         constexpr int size = num_tokens * hidden_dim;
         test::runbench(nranks, size, hidden_dim);
     }
