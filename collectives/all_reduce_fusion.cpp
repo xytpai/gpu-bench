@@ -510,14 +510,10 @@ void allreduce_fusion_kernel_launcher(AllReduceFusionParams<T> const &params) {
     for (int r = 0; r < NRanks; ++r) {
         begin_tokens[r] = r * token_num_per_rank + (remaining_token > r ? r : remaining_token);
         token_num_per_ranks[r] = token_num_per_rank + (remaining_token > r ? 1 : 0);
-        if (params.rank == 0)
-            std::cout << "rank:" << r << ", begin_tokens:" << begin_tokens[r] << ", token_num_per_ranks:" << token_num_per_ranks[r] << "\n";
     }
+
     dim3 threadsPerBlock(threads_per_block);
     dim3 numBlocks(NBLOCKS_PER_GPU);
-    if (params.rank == 0)
-        std::cout << "threadsPerBlock:" << threadsPerBlock.x << ", numBlocks:" << numBlocks.x << "\n";
-
     if (params.rank == 0) std::cout << "using twoshot\n";
     allreduce_fusion_kernel_twoshot_sync<T, NRanks><<<numBlocks, threadsPerBlock>>>(params, begin_tokens, token_num_per_ranks);
 }
@@ -526,25 +522,121 @@ void allreduce_fusion_kernel_launcher(AllReduceFusionParams<T> const &params) {
 
 namespace test {
 
-struct GPUResources {
+template <typename T>
+class GPUInputs {
+public:
     int size;
     int hidden_dim;
+    int rank;
     void *allreduce_in;
     void *residual_in;
     void *residual_out;
     void *norm_out;
     void *rms_gamma;
-    void *comm_bufs;
-    // barrier
+    GPUInputs() :
+        size(0), hidden_dim(0),
+        allreduce_in(nullptr), residual_in(nullptr), residual_out(nullptr),
+        norm_out(nullptr), rms_gamma(nullptr) {
+    }
+    void allocate(int rank, int size, int hidden_dim) {
+        this->size = size;
+        this->hidden_dim = hidden_dim;
+        this->rank = rank;
+        gpuSetDevice(rank);
+        gpuMalloc(&allreduce_in, size * sizeof(T));
+        gpuMalloc(&residual_in, size * sizeof(T));
+        gpuMalloc(&residual_out, size * sizeof(T));
+        gpuMalloc(&norm_out, size * sizeof(T));
+        gpuMalloc(&rms_gamma, hidden_dim * sizeof(T));
+        gpuDeviceSynchronize();
+    }
+    ~GPUInputs() {
+        gpuSetDevice(rank);
+        gpuFree(allreduce_in);
+        gpuFree(residual_in);
+        gpuFree(residual_out);
+        gpuFree(norm_out);
+        gpuFree(rms_gamma);
+        gpuDeviceSynchronize();
+    }
+};
+
+template <typename T>
+class GPUCommWorkspace {
+    int rank;
+    int nranks;
+    int size;
+
+public:
     int nblocks;
-    int *barrier_flags;
     int *counter;
+    // barrier
+    void *comm_bufs;
+    int *barrier_flags;
     int *flag;
     // lamport
     void *lamport_data_bufs;
     int *lamport_flag;
     int *lamport_clear;
     int *lamport_comm_size;
+
+    GPUCommWorkspace() :
+        nblocks(NBLOCKS_PER_GPU), counter(nullptr),
+        comm_bufs(nullptr), barrier_flags(nullptr), flag(nullptr),
+        lamport_data_bufs(nullptr), lamport_flag(nullptr), lamport_clear(nullptr),
+        lamport_comm_size(nullptr) {
+    }
+    void allocate(int rank, int nranks, int size) {
+        this->rank = rank;
+        this->nranks = nranks;
+        this->size = size;
+        gpuSetDevice(rank);
+        gpuMalloc(&counter, sizeof(int));
+        // barrier
+        gpuMalloc(&comm_bufs, 2 * size * sizeof(T));
+        gpuMalloc(&barrier_flags, nblocks * nranks * sizeof(int));
+        gpuMalloc(&flag, sizeof(int));
+        // lamport
+        gpuMalloc(&lamport_data_bufs, 3 * nranks * size * sizeof(T));
+        gpuMalloc(&lamport_flag, sizeof(int));
+        gpuMalloc(&lamport_clear, sizeof(int));
+        gpuMalloc(&lamport_comm_size, sizeof(int));
+        gpuDeviceSynchronize();
+        reset();
+    }
+    void reset() {
+        gpuSetDevice(rank);
+        // barrier
+        gpuMemset(counter, 0, sizeof(int));
+        gpuMemset(barrier_flags, 0, nblocks * nranks * sizeof(int));
+        gpuMemset(flag, 0, sizeof(int));
+        // lamport
+        gpuMemset(lamport_flag, 0, sizeof(int));
+        int sizes[1] = {nranks * size};
+        gpuMemcpy(lamport_clear, sizes, sizeof(int), gpuMemcpyHostToDevice);
+        gpuMemcpy(lamport_comm_size, sizes, sizeof(int), gpuMemcpyHostToDevice);
+        T *lamport_data_bufs_ = new T[nranks * size];
+        for (int i = 0; i < nranks * size; ++i) {
+            lamport_data_bufs_[i] = allreduce_fusion::neg_zero_v<T>;
+        }
+        gpuMemcpy(lamport_data_bufs, lamport_data_bufs_, nranks * size * sizeof(T), gpuMemcpyHostToDevice);
+        delete[] lamport_data_bufs_;
+        gpuDeviceSynchronize();
+    }
+    ~GPUCommWorkspace() {
+        gpuSetDevice(rank);
+        gpuFree(counter);
+        // barrier
+        gpuFree(comm_bufs);
+        gpuFree(barrier_flags);
+        gpuFree(flag);
+        // lamport
+        gpuFree(lamport_data_bufs);
+        gpuFree(lamport_flag);
+        gpuFree(lamport_clear);
+        gpuFree(lamport_comm_size);
+        gpuDeviceSynchronize();
+    }
 };
 
 template <typename T>
@@ -553,24 +645,11 @@ public:
     GPUWorkSpace() :
         workspace_(nullptr) {
     }
-    void init(std::vector<GPUResources> &rs, int rank) {
+    void init(std::vector<GPUCommWorkspace<T>> &rs, int rank) {
         gpuSetDevice(rank);
+        rank_ = rank;
         int nranks = rs.size();
         auto &r = rs[rank];
-        gpuMemset(r.barrier_flags, 0, r.nblocks * nranks * sizeof(int));
-        gpuMemset(r.counter, 0, sizeof(int));
-        gpuMemset(r.flag, 0, sizeof(int));
-        // lamport
-        gpuMemset(r.lamport_flag, 0, sizeof(int));
-        int sizes[1] = {nranks * r.size};
-        gpuMemcpy(r.lamport_clear, sizes, sizeof(int), gpuMemcpyHostToDevice);
-        gpuMemcpy(r.lamport_comm_size, sizes, sizeof(int), gpuMemcpyHostToDevice);
-        T *lamport_data_bufs = new T[nranks * r.size];
-        for (int i = 0; i < nranks * r.size; ++i) {
-            lamport_data_bufs[i] = allreduce_fusion::neg_zero_v<T>;
-        }
-        gpuMemcpy(r.lamport_data_bufs, lamport_data_bufs, nranks * r.size * sizeof(T), gpuMemcpyHostToDevice);
-        delete[] lamport_data_bufs;
         std::vector<void *> workspace(nranks * 3 + 5);
         for (int peer = 0; peer < nranks; ++peer) {
             workspace[peer] = (void *)rs[peer].comm_bufs;
@@ -588,7 +667,9 @@ public:
         gpuDeviceSynchronize();
     }
     ~GPUWorkSpace() {
+        gpuSetDevice(rank_);
         gpuFree(workspace_);
+        gpuDeviceSynchronize();
     }
     void **workspace() const {
         return workspace_;
@@ -596,59 +677,8 @@ public:
 
 private:
     void **workspace_;
+    int rank_;
 };
-
-template <typename T>
-int allocate_resources(std::vector<GPUResources> &rs, int size, int hidden_dim) {
-    int nranks = 0;
-    gpuGetDeviceCount(&nranks);
-    rs.resize(nranks);
-    int num_tokens = size / hidden_dim;
-    for (int rank = 0; rank < nranks; ++rank) {
-        gpuSetDevice(rank);
-        rs[rank].size = size;
-        rs[rank].hidden_dim = hidden_dim;
-        gpuMalloc(&rs[rank].allreduce_in, size * sizeof(T));
-        gpuMalloc(&rs[rank].residual_in, size * sizeof(T));
-        gpuMalloc(&rs[rank].residual_out, size * sizeof(T));
-        gpuMalloc(&rs[rank].norm_out, size * sizeof(T));
-        gpuMalloc(&rs[rank].rms_gamma, hidden_dim * sizeof(T));
-        gpuMalloc(&rs[rank].comm_bufs, 2 * size * sizeof(T));
-        // barrier
-        gpuMalloc(&rs[rank].barrier_flags, NBLOCKS_PER_GPU * nranks * sizeof(int));
-        gpuMalloc(&rs[rank].counter, sizeof(int));
-        gpuMalloc(&rs[rank].flag, sizeof(int));
-        rs[rank].nblocks = NBLOCKS_PER_GPU;
-        // lamport
-        gpuMalloc(&rs[rank].lamport_data_bufs, 3 * nranks * size * sizeof(T));
-        gpuMalloc(&rs[rank].lamport_flag, sizeof(int));
-        gpuMalloc(&rs[rank].lamport_clear, sizeof(int));
-        gpuMalloc(&rs[rank].lamport_comm_size, sizeof(int));
-    }
-    return nranks;
-}
-
-void delete_resources(std::vector<GPUResources> &rs) {
-    int nranks = rs.size();
-    for (int rank = 0; rank < nranks; ++rank) {
-        gpuSetDevice(rank);
-        gpuFree(rs[rank].allreduce_in);
-        gpuFree(rs[rank].residual_in);
-        gpuFree(rs[rank].residual_out);
-        gpuFree(rs[rank].norm_out);
-        gpuFree(rs[rank].rms_gamma);
-        gpuFree(rs[rank].comm_bufs);
-        // barrier
-        gpuFree(rs[rank].barrier_flags);
-        gpuFree(rs[rank].counter);
-        gpuFree(rs[rank].flag);
-        // lamport
-        gpuFree(rs[rank].lamport_data_bufs);
-        gpuFree(rs[rank].lamport_flag);
-        gpuFree(rs[rank].lamport_clear);
-        gpuFree(rs[rank].lamport_comm_size);
-    }
-}
 
 void allreduce_rmsnorm_ref(
     const float *allreduce_in,
@@ -717,21 +747,25 @@ void runbench(int nranks, int size, int hidden_dim, float eps = 1e-6, float atol
         rms_gamma[i] = 0.f + 1.f * (rand() / (float)INT_MAX);
     }
 
-    std::vector<GPUResources> rs;
+    std::vector<GPUInputs<float>> gpu_inputs(nranks);
+    std::vector<GPUCommWorkspace<float>> comm_workspaces(nranks);
+    for (int r = 0; r < nranks; ++r) {
+        gpu_inputs[r].allocate(r, size, hidden_dim);
+        comm_workspaces[r].allocate(r, nranks, size);
+    }
 
     // gen gpu data
-    allocate_resources<float>(rs, size, hidden_dim);
     for (int r = 0; r < nranks; ++r) {
         gpuSetDevice(r);
-        gpuMemcpy(rs[r].allreduce_in, allreduce_in + r * size, size * sizeof(float), gpuMemcpyHostToDevice);
-        gpuMemcpy(rs[r].residual_in, residual_in, size * sizeof(float), gpuMemcpyHostToDevice);
-        gpuMemcpy(rs[r].rms_gamma, rms_gamma, hidden_dim * sizeof(float), gpuMemcpyHostToDevice);
+        gpuMemcpy(gpu_inputs[r].allreduce_in, allreduce_in + r * size, size * sizeof(float), gpuMemcpyHostToDevice);
+        gpuMemcpy(gpu_inputs[r].residual_in, residual_in, size * sizeof(float), gpuMemcpyHostToDevice);
+        gpuMemcpy(gpu_inputs[r].rms_gamma, rms_gamma, hidden_dim * sizeof(float), gpuMemcpyHostToDevice);
         gpuDeviceSynchronize();
     }
 
     std::vector<GPUWorkSpace<float>> workspaces(nranks);
-    for (int rank = 0; rank < nranks; ++rank) {
-        workspaces[rank].init(rs, rank);
+    for (int r = 0; r < nranks; ++r) {
+        workspaces[r].init(comm_workspaces, r);
     }
 
     for (int rank = 0; rank < nranks; ++rank) {
@@ -742,11 +776,11 @@ void runbench(int nranks, int size, int hidden_dim, float eps = 1e-6, float atol
         params.size = size;
         params.hidden_dim = hidden_dim;
         params.workspace = workspaces[rank].workspace();
-        params.allreduce_in = rs[rank].allreduce_in;
-        params.residual_in = rs[rank].residual_in;
-        params.residual_out = rs[rank].residual_out;
-        params.norm_out = rs[rank].norm_out;
-        params.rms_gamma = rs[rank].rms_gamma;
+        params.allreduce_in = gpu_inputs[rank].allreduce_in;
+        params.residual_in = gpu_inputs[rank].residual_in;
+        params.residual_out = gpu_inputs[rank].residual_out;
+        params.norm_out = gpu_inputs[rank].norm_out;
+        params.rms_gamma = gpu_inputs[rank].rms_gamma;
         params.rms_eps = eps;
         if (nranks == 8) {
             allreduce_fusion::allreduce_fusion_kernel_launcher<float, 8>(params);
@@ -766,8 +800,8 @@ void runbench(int nranks, int size, int hidden_dim, float eps = 1e-6, float atol
     bool val = true;
     for (int r = 0; r < nranks; ++r) {
         gpuSetDevice(r);
-        gpuMemcpy(residual_out, rs[r].residual_out, size * sizeof(float), gpuMemcpyDeviceToHost);
-        gpuMemcpy(norm_out, rs[r].norm_out, size * sizeof(float), gpuMemcpyDeviceToHost);
+        gpuMemcpy(residual_out, gpu_inputs[r].residual_out, size * sizeof(float), gpuMemcpyDeviceToHost);
+        gpuMemcpy(norm_out, gpu_inputs[r].norm_out, size * sizeof(float), gpuMemcpyDeviceToHost);
         gpuDeviceSynchronize();
         for (int i = 0; i < size; ++i) {
             if (std::isnan(residual_out[i]) || std::abs(residual_out[i] - residual_out_ref[i]) > atol) {
@@ -791,23 +825,19 @@ void runbench(int nranks, int size, int hidden_dim, float eps = 1e-6, float atol
     delete[] norm_out_ref;
     delete[] residual_out;
     delete[] norm_out;
-    delete_resources(rs);
 }
 
 } // namespace test
 
 int main() {
     int nranks = enable_p2p();
-    {
-        constexpr int num_tokens = 55;
-        constexpr int hidden_dim = 1024 - 4;
-        constexpr int size = num_tokens * hidden_dim;
-        test::runbench(nranks, size, hidden_dim);
-    }
-    {
-        constexpr int num_tokens = 256;
-        constexpr int hidden_dim = 512 - 4;
-        constexpr int size = num_tokens * hidden_dim;
-        test::runbench(nranks, size, hidden_dim);
+    std::vector<int> num_tokens_ = {513, 1257};
+    std::vector<int> hidden_dims = {1024, 512 - 4};
+    for (auto num_tokens : num_tokens_) {
+        for (auto hidden_dim : hidden_dims) {
+            int size = num_tokens * hidden_dim;
+            std::cout << "num_tokens:" << num_tokens << ", hidden_dim:" << hidden_dim << "\n";
+            test::runbench(nranks, size, hidden_dim);
+        }
     }
 }
