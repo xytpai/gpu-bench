@@ -22,6 +22,15 @@ static constexpr int kOneShotMaxToken = 128;
 
 namespace block_utils {
 
+#ifdef __CUDACC__
+template <typename T>
+__inline__ __device__ T warp_reduce_sum(T val) {
+#pragma unroll
+    for (int mask = 16; mask > 0; mask >>= 1)
+        val += __shfl_xor_sync(0xffffffff, val, mask, 32);
+    return val;
+}
+#else
 template <typename T>
 __device__ __forceinline__ T warp_reduce_sum(T val) {
 #pragma unroll
@@ -30,6 +39,7 @@ __device__ __forceinline__ T warp_reduce_sum(T val) {
     }
     return val;
 }
+#endif
 
 template <typename T>
 __inline__ __device__ T block_reduce_sum(T val) {
