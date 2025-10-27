@@ -446,42 +446,26 @@ __global__ void allreduce_fusion_kernel_twoshot_sync(AllReduceFusionParams<T> pa
     int access_id = token_id * params.hidden_dim / VEC_SIZE + access_id_in_token;
     int access_stride = token_stride * params.hidden_dim / VEC_SIZE;
     int tot_access = params.size / VEC_SIZE;
-    __threadfence();
-
     FusedOp<T> fused_op(params, access_id, access_id_in_token);
-    __threadfence();
     comm::SyncComm<NRanks> comm(params.workspace);
 
-// #pragma unroll
-//     for (int r = 0; r < NRanks; ++r) {
-//         int comm_access_id = access_id + begin_tokens[r] * params.hidden_dim / VEC_SIZE;
-//         int comm_tot_access = (begin_tokens[r] + token_num_per_ranks[r]) * params.hidden_dim / VEC_SIZE;
-//         for (int idx = comm_access_id; idx < comm_tot_access; idx += access_stride) {
-//             reinterpret_cast<float4 *>(comm.comm_bufs[params.rank])[idx] =
-//                 reinterpret_cast<float4 *>(params.allreduce_in)[idx];
-//         }
-//     }
 #pragma unroll
     for (int r = 0; r < NRanks; ++r) {
         int comm_access_id = access_id + begin_tokens[r] * params.hidden_dim / VEC_SIZE;
         int comm_tot_access = (begin_tokens[r] + token_num_per_ranks[r]) * params.hidden_dim / VEC_SIZE;
         for (int idx = comm_access_id; idx < comm_tot_access; idx += access_stride) {
-            __threadfence();
-            vec_t<T, VEC_SIZE> v;
-            v.load(reinterpret_cast<T *>(params.allreduce_in) + idx * VEC_SIZE);
-            v.store(reinterpret_cast<T *>(comm.comm_bufs[params.rank]) + idx * VEC_SIZE);
+            reinterpret_cast<float4 *>(comm.comm_bufs[params.rank])[idx] =
+                reinterpret_cast<float4 *>(params.allreduce_in)[idx];
         }
     }
 
     comm::Barrier<NRanks> barrier(params.rank, comm);
-    __threadfence();
     barrier.sync();
 
     int comm_access_id = access_id + begin_tokens[params.rank] * params.hidden_dim / VEC_SIZE;
     int comm_tot_access = (begin_tokens[params.rank] + token_num_per_ranks[params.rank]) * params.hidden_dim / VEC_SIZE;
     for (int idx = comm_access_id; idx < comm_tot_access; idx += access_stride) {
         vec_t<T, VEC_SIZE> vals[NRanks];
-        __threadfence();
 #pragma unroll
         for (int r = 0; r < NRanks; ++r) {
             vals[r].load(reinterpret_cast<T *>(comm.comm_bufs[r]) + idx * VEC_SIZE);
@@ -490,7 +474,6 @@ __global__ void allreduce_fusion_kernel_twoshot_sync(AllReduceFusionParams<T> pa
         for (int r = 1; r < NRanks; ++r) {
             vec_add_<T, VEC_SIZE>(vals[0], vals[r]);
         }
-        __threadfence();
 #pragma unroll
         for (int r = 0; r < NRanks; ++r) {
             vals[0].store(reinterpret_cast<T *>(comm.comm_bufs[r]) + (tot_access + idx) * VEC_SIZE);
@@ -506,17 +489,13 @@ __global__ void allreduce_fusion_kernel_twoshot_sync(AllReduceFusionParams<T> pa
         int comm_tot_access = (begin_tokens[r] + token_num_per_ranks[r]) * params.hidden_dim / VEC_SIZE;
         for (int idx = comm_access_id, tidx = comm_token_id; idx < comm_tot_access;
              idx += access_stride, tidx += token_stride) {
-            __threadfence();
             fused_op.update(idx);
             vec_t<T, VEC_SIZE> sum_val;
-            __threadfence();
             sum_val.load(reinterpret_cast<T *>(comm.comm_bufs[params.rank]) + (tot_access + idx) * VEC_SIZE);
-            __threadfence();
             fused_op(sum_val, tidx);
         }
     }
 
-    __threadfence();
     comm.update(barrier.m_flag_value);
 }
 
