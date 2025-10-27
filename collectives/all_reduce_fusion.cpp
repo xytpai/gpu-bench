@@ -33,19 +33,25 @@ __device__ __forceinline__ T warp_reduce_sum(T val) {
 
 template <typename T>
 __inline__ __device__ T block_reduce_sum(T val) {
-    static __shared__ T shared[32];
+    static __shared__ T shared[1024];
     const int tid = threadIdx.x;
     const int w_tid = tid % 32;
     const int wid = tid / 32;
-    val = warp_reduce_sum(val);
-    if (w_tid == 0) {
-        shared[wid] = val;
+    // val = warp_reduce_sum(val);
+    // if (w_tid == 0) {
+    //     shared[wid] = val;
+    // }
+    shared[threadIdx.x] = val;
+    __syncthreads();
+    // bool is_mask = threadIdx.x < (blockDim.x / 32.f);
+    // val = is_mask ? shared[w_tid] : (T)(0.0f);
+    for (int i = 0; i < blockDim.x; i++) {
+        if (i != threadIdx.x) {
+            val += shared[i];
+        }
     }
     __syncthreads();
-    bool is_mask = threadIdx.x < (blockDim.x / 32.f);
-    val = is_mask ? shared[w_tid] : (T)(0.0f);
-    __syncthreads();
-    val = warp_reduce_sum(val);
+    // val = warp_reduce_sum(val);
     return val;
 }
 
@@ -82,7 +88,7 @@ struct SyncComm {
     int *flag_ptr;
     void *comm_bufs[NRanks];
     void *barrier_flags[NRanks];
-    int flag_value;
+    volatile int flag_value;
 };
 
 template <int NRanks>
@@ -157,6 +163,7 @@ public:
 
 protected:
     __device__ __forceinline__ void st_flag(int *addr, int flag) {
+        __threadfence();
 #ifdef __CUDACC__
         asm volatile("st.global.release.sys.b32 [%1], %0;" ::"r"(flag), "l"(addr));
 #else
@@ -165,6 +172,7 @@ protected:
     }
 
     __device__ __forceinline__ int ld_flag(int *addr) {
+        __threadfence();
         int flag;
 #ifdef __CUDACC__
         asm volatile("ld.global.acquire.sys.b32 %0, [%1];"
@@ -185,7 +193,7 @@ protected:
     }
 
 public:
-    int m_flag_value;
+    volatile int m_flag_value;
 
 private:
     int *m_target_flag;
@@ -433,27 +441,42 @@ __global__ void allreduce_fusion_kernel_twoshot_sync(AllReduceFusionParams<T> pa
     int access_id = token_id * params.hidden_dim / VEC_SIZE + access_id_in_token;
     int access_stride = token_stride * params.hidden_dim / VEC_SIZE;
     int tot_access = params.size / VEC_SIZE;
+    __threadfence();
 
     FusedOp<T> fused_op(params, access_id, access_id_in_token);
+    __threadfence();
     comm::SyncComm<NRanks> comm(params.workspace);
 
+// #pragma unroll
+//     for (int r = 0; r < NRanks; ++r) {
+//         int comm_access_id = access_id + begin_tokens[r] * params.hidden_dim / VEC_SIZE;
+//         int comm_tot_access = (begin_tokens[r] + token_num_per_ranks[r]) * params.hidden_dim / VEC_SIZE;
+//         for (int idx = comm_access_id; idx < comm_tot_access; idx += access_stride) {
+//             reinterpret_cast<float4 *>(comm.comm_bufs[params.rank])[idx] =
+//                 reinterpret_cast<float4 *>(params.allreduce_in)[idx];
+//         }
+//     }
 #pragma unroll
     for (int r = 0; r < NRanks; ++r) {
         int comm_access_id = access_id + begin_tokens[r] * params.hidden_dim / VEC_SIZE;
         int comm_tot_access = (begin_tokens[r] + token_num_per_ranks[r]) * params.hidden_dim / VEC_SIZE;
         for (int idx = comm_access_id; idx < comm_tot_access; idx += access_stride) {
-            reinterpret_cast<float4 *>(comm.comm_bufs[params.rank])[idx] =
-                reinterpret_cast<float4 *>(params.allreduce_in)[idx];
+            __threadfence();
+            vec_t<T, VEC_SIZE> v;
+            v.load(reinterpret_cast<T *>(params.allreduce_in) + idx * VEC_SIZE);
+            v.store(reinterpret_cast<T *>(comm.comm_bufs[params.rank]) + idx * VEC_SIZE);
         }
     }
 
     comm::Barrier<NRanks> barrier(params.rank, comm);
+    __threadfence();
     barrier.sync();
 
     int comm_access_id = access_id + begin_tokens[params.rank] * params.hidden_dim / VEC_SIZE;
     int comm_tot_access = (begin_tokens[params.rank] + token_num_per_ranks[params.rank]) * params.hidden_dim / VEC_SIZE;
     for (int idx = comm_access_id; idx < comm_tot_access; idx += access_stride) {
         vec_t<T, VEC_SIZE> vals[NRanks];
+        __threadfence();
 #pragma unroll
         for (int r = 0; r < NRanks; ++r) {
             vals[r].load(reinterpret_cast<T *>(comm.comm_bufs[r]) + idx * VEC_SIZE);
@@ -462,6 +485,7 @@ __global__ void allreduce_fusion_kernel_twoshot_sync(AllReduceFusionParams<T> pa
         for (int r = 1; r < NRanks; ++r) {
             vec_add_<T, VEC_SIZE>(vals[0], vals[r]);
         }
+        __threadfence();
 #pragma unroll
         for (int r = 0; r < NRanks; ++r) {
             vals[0].store(reinterpret_cast<T *>(comm.comm_bufs[r]) + (tot_access + idx) * VEC_SIZE);
@@ -477,13 +501,17 @@ __global__ void allreduce_fusion_kernel_twoshot_sync(AllReduceFusionParams<T> pa
         int comm_tot_access = (begin_tokens[r] + token_num_per_ranks[r]) * params.hidden_dim / VEC_SIZE;
         for (int idx = comm_access_id, tidx = comm_token_id; idx < comm_tot_access;
              idx += access_stride, tidx += token_stride) {
+            __threadfence();
             fused_op.update(idx);
             vec_t<T, VEC_SIZE> sum_val;
+            __threadfence();
             sum_val.load(reinterpret_cast<T *>(comm.comm_bufs[params.rank]) + (tot_access + idx) * VEC_SIZE);
+            __threadfence();
             fused_op(sum_val, tidx);
         }
     }
 
+    __threadfence();
     comm.update(barrier.m_flag_value);
 }
 
@@ -786,6 +814,8 @@ void runbench(int nranks, int size, int hidden_dim, float eps = 1e-6, float atol
             allreduce_fusion::allreduce_fusion_kernel_launcher<float, 8>(params);
         } else if (nranks == 4) {
             allreduce_fusion::allreduce_fusion_kernel_launcher<float, 4>(params);
+        } else if (nranks == 1) {
+            allreduce_fusion::allreduce_fusion_kernel_launcher<float, 1>(params);
         }
     }
     for (int rank = 0; rank < nranks; ++rank) {
@@ -831,6 +861,7 @@ void runbench(int nranks, int size, int hidden_dim, float eps = 1e-6, float atol
 
 int main() {
     int nranks = enable_p2p();
+    std::cout << "nranks:" << nranks << "\n";
     std::vector<int> num_tokens_ = {513, 1257};
     std::vector<int> hidden_dims = {1024, 512 - 4};
     for (auto num_tokens : num_tokens_) {
