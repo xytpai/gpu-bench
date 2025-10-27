@@ -33,25 +33,19 @@ __device__ __forceinline__ T warp_reduce_sum(T val) {
 
 template <typename T>
 __inline__ __device__ T block_reduce_sum(T val) {
-    static __shared__ T shared[1024];
+    static __shared__ T shared[32];
     const int tid = threadIdx.x;
     const int w_tid = tid % 32;
     const int wid = tid / 32;
-    // val = warp_reduce_sum(val);
-    // if (w_tid == 0) {
-    //     shared[wid] = val;
-    // }
-    shared[threadIdx.x] = val;
-    __syncthreads();
-    // bool is_mask = threadIdx.x < (blockDim.x / 32.f);
-    // val = is_mask ? shared[w_tid] : (T)(0.0f);
-    for (int i = 0; i < blockDim.x; i++) {
-        if (i != threadIdx.x) {
-            val += shared[i];
-        }
+    val = warp_reduce_sum(val);
+    if (w_tid == 0) {
+        shared[wid] = val;
     }
     __syncthreads();
-    // val = warp_reduce_sum(val);
+    bool is_mask = threadIdx.x < (blockDim.x / 32.f);
+    val = is_mask ? shared[w_tid] : (T)(0.0f);
+    __syncthreads();
+    val = warp_reduce_sum(val);
     return val;
 }
 
@@ -72,7 +66,9 @@ struct SyncComm {
         __syncthreads();
         if (threadIdx.x == 0) {
             atomicAdd(counter_ptr, 1);
+            __threadfence();
         }
+        __syncthreads();
     }
 
     __device__ __forceinline__ void update(int new_flag_value) {
@@ -147,7 +143,6 @@ public:
     __device__ __forceinline__ void sync() {
         constexpr int kBarrierFlagCount = DEFAULT_NCTAS;
         __syncthreads();
-        __threadfence_system();
         if (threadIdx.x < NRanks) {
             m_flag_value = next_flag(m_flag_value);
             // To avoid the ABA problem, we need to synchronize the correct flag value to all
@@ -163,22 +158,22 @@ public:
 
 protected:
     __device__ __forceinline__ void st_flag(int *addr, int flag) {
-        __threadfence();
 #ifdef __CUDACC__
         asm volatile("st.global.release.sys.b32 [%1], %0;" ::"r"(flag), "l"(addr));
 #else
         __hip_atomic_store(addr, flag, __ATOMIC_RELEASE, __HIP_MEMORY_SCOPE_SYSTEM);
+        __threadfence_system();
 #endif
     }
 
     __device__ __forceinline__ int ld_flag(int *addr) {
-        __threadfence();
         int flag;
 #ifdef __CUDACC__
         asm volatile("ld.global.acquire.sys.b32 %0, [%1];"
                      : "=r"(flag)
                      : "l"(addr));
 #else
+        __threadfence_system();
         flag = __hip_atomic_load(addr, __ATOMIC_ACQUIRE, __HIP_MEMORY_SCOPE_SYSTEM);
 #endif
         return flag;
@@ -862,7 +857,7 @@ void runbench(int nranks, int size, int hidden_dim, float eps = 1e-6, float atol
 int main() {
     int nranks = enable_p2p();
     std::cout << "nranks:" << nranks << "\n";
-    std::vector<int> num_tokens_ = {513, 1257};
+    std::vector<int> num_tokens_ = {513, 1257, 778, 10024};
     std::vector<int> hidden_dims = {1024, 512 - 4};
     for (auto num_tokens : num_tokens_) {
         for (auto hidden_dim : hidden_dims) {
