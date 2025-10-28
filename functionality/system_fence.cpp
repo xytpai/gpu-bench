@@ -57,13 +57,13 @@ __global__ void produce_kernel(int *data, int *flag, int n, int base, bool use_f
         data[idx] = base + idx; // set data
     }
     if (use_fence) __threadfence_system();
-    *flag = 1;
+    if (threadIdx.x == 0) atomicAdd(flag, 1);
 }
 
 __global__ void consume_kernel(int *data, int *flag, int n, int base) {
     volatile bool done = false;
     while(!done) {
-        done = *flag != 0;
+        done = *flag == gridDim.x;
     }
     for (int idx = threadIdx.x + blockIdx.x * blockDim.x; idx < n; idx += blockDim.x * gridDim.x) {
         if(data[idx] != base + idx) {
@@ -111,7 +111,7 @@ int main() {
     std::cout << "system fence test ... \n";
     for (int i = 0; i < 10; ++i) {
         std::cout << "step:" << i << "\n";
-        threadfence_system_test(0, 1, 1024*4);
+        threadfence_system_test(0, 1, 1024*1024);
     }
     std::cout << "ok\n";
 }
