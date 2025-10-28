@@ -56,11 +56,10 @@ __global__ void produce_kernel(int *data, int *flag, int n, int base, bool use_f
     for (int idx = threadIdx.x + blockIdx.x * blockDim.x; idx < n; idx += blockDim.x * gridDim.x) {
         data[idx] = base + idx; // set data
     }
+    __syncthreads();
     __threadfence_system();
     if (threadIdx.x == 0) {
-        __threadfence_system();
         atomicAdd(flag, 1);
-        __threadfence_system();
     }
 }
 
@@ -95,6 +94,7 @@ void threadfence_system_test(int dev_p, int dev_c, int n) {
     dim3 numBlocks(256);
 
     gpuSetDevice(dev_c);
+    std::cout << "start at base:" << base << "\n";
     consume_kernel<<<numBlocks, threadsPerBlock>>>(data, flag, n, base);
     gpuSetDevice(dev_p);
     produce_kernel<<<numBlocks, threadsPerBlock>>>(data, flag, n, base, true);
@@ -115,7 +115,6 @@ int main() {
     enable_p2p();
     std::cout << "system fence test ... \n";
     for (int i = 0; i < 10; ++i) {
-        std::cout << "step:" << i << "\n";
         threadfence_system_test(0, 1, 1024*1024);
     }
     std::cout << "ok\n";
