@@ -56,8 +56,12 @@ __global__ void produce_kernel(int *data, int *flag, int n, int base, bool use_f
     for (int idx = threadIdx.x + blockIdx.x * blockDim.x; idx < n; idx += blockDim.x * gridDim.x) {
         data[idx] = base + idx; // set data
     }
-    if (use_fence) __threadfence_system();
-    if (threadIdx.x == 0) atomicAdd(flag, 1);
+    __threadfence_system();
+    if (threadIdx.x == 0) {
+        __threadfence_system();
+        atomicAdd(flag, 1);
+        __threadfence_system();
+    }
 }
 
 __global__ void consume_kernel(int *data, int *flag, int n, int base) {
@@ -66,8 +70,9 @@ __global__ void consume_kernel(int *data, int *flag, int n, int base) {
         done = *flag == gridDim.x;
     }
     for (int idx = threadIdx.x + blockIdx.x * blockDim.x; idx < n; idx += blockDim.x * gridDim.x) {
-        if(data[idx] != base + idx) {
-            printf("error\n");
+        auto data_ = data[idx];
+        if(data_ != base + idx) {
+            printf("error at %d, expected:%d, but found:%d\n", idx, base + idx, data_);
         }
     }
 }
@@ -76,12 +81,12 @@ void threadfence_system_test(int dev_p, int dev_c, int n) {
     static int base = 0;
     int *data, *flag;
 
-    gpuGetDevice(&dev_p);
+    gpuSetDevice(dev_p);
     gpuMalloc(&data, n * sizeof(int));
     gpuMemset(data, 0, n * sizeof(int));
     gpuDeviceSynchronize();
 
-    gpuGetDevice(&dev_c);
+    gpuSetDevice(dev_c);
     gpuMalloc(&flag, 1 * sizeof(int));
     gpuMemset(flag, 0, 1 * sizeof(int));
     gpuDeviceSynchronize();
@@ -89,19 +94,19 @@ void threadfence_system_test(int dev_p, int dev_c, int n) {
     dim3 threadsPerBlock(256);
     dim3 numBlocks(256);
 
-    gpuGetDevice(&dev_c);
+    gpuSetDevice(dev_c);
     consume_kernel<<<numBlocks, threadsPerBlock>>>(data, flag, n, base);
-    gpuGetDevice(&dev_p);
+    gpuSetDevice(dev_p);
     produce_kernel<<<numBlocks, threadsPerBlock>>>(data, flag, n, base, true);
     
-    gpuGetDevice(&dev_p);
+    gpuSetDevice(dev_p);
     gpuDeviceSynchronize();
-    gpuGetDevice(&dev_c);
+    gpuSetDevice(dev_c);
     gpuDeviceSynchronize();
 
-    gpuGetDevice(&dev_p);
+    gpuSetDevice(dev_p);
     gpuFree(data);
-    gpuGetDevice(&dev_c);
+    gpuSetDevice(dev_c);
     gpuFree(flag);
     base++;
 }
