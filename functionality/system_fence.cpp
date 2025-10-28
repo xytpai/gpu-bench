@@ -52,22 +52,28 @@ int enable_p2p() {
     return ngpus;
 }
 
+__device__ void delay(unsigned long long cycles) {
+    unsigned long long start = clock64();
+    while ((clock64() - start) < cycles) {
+        asm volatile("");
+    }
+}
+
 __global__ void produce_kernel(int *data, int *flag, int n, int base, bool use_fence) {
     for (int idx = threadIdx.x + blockIdx.x * blockDim.x; idx < n; idx += blockDim.x * gridDim.x) {
         data[idx] = base + idx; // set data
+        unsigned long long delay_cycles = idx > 10000 ? 10000 : idx;
+        delay(delay_cycles);
     }
     __syncthreads();
-    __threadfence_system();
+    if (use_fence) __threadfence_system();
     if (threadIdx.x == 0) {
         atomicAdd(flag, 1);
     }
 }
 
 __global__ void consume_kernel(int *data, int *flag, int n, int base) {
-    volatile bool done = false;
-    while(!done) {
-        done = *flag == gridDim.x;
-    }
+    while(atomicAdd(flag, 0) != gridDim.x);
     for (int idx = threadIdx.x + blockIdx.x * blockDim.x; idx < n; idx += blockDim.x * gridDim.x) {
         auto data_ = data[idx];
         if(data_ != base + idx) {
@@ -112,10 +118,10 @@ void threadfence_system_test(int dev_p, int dev_c, int n) {
 }
 
 int main() {
-    enable_p2p();
+    int nranks = enable_p2p();
     std::cout << "system fence test ... \n";
-    for (int i = 0; i < 10; ++i) {
-        threadfence_system_test(0, 1, 1024*1024);
+    for (int i = 0; i < nranks; ++i) {
+        threadfence_system_test(0, i, 1024*1024*1024);
     }
     std::cout << "ok\n";
 }

@@ -169,25 +169,26 @@ public:
     }
 
 protected:
-    __device__ __forceinline__ void st_flag(int *addr, int flag) {
+    __device__ void st_flag(int *addr, int flag) {
 #ifdef __CUDACC__
         asm volatile("st.global.release.sys.b32 [%1], %0;" ::"r"(flag), "l"(addr));
 #else
-#pragma clang optimize off
         __threadfence_system();
-        __hip_atomic_store(addr, flag, __ATOMIC_RELEASE, __HIP_MEMORY_SCOPE_SYSTEM);
-#pragma clang optimize on
+        // __hip_atomic_store(addr, flag, __ATOMIC_RELEASE, __HIP_MEMORY_SCOPE_SYSTEM);
+        // *addr = flag;
+        atomicExch(addr, flag);
 #endif
     }
 
-    __device__ __forceinline__ int ld_flag(int *addr) {
+    __device__ int ld_flag(int *addr) {
         int flag;
 #ifdef __CUDACC__
         asm volatile("ld.global.acquire.sys.b32 %0, [%1];"
                      : "=r"(flag)
                      : "l"(addr));
 #else
-        flag = __hip_atomic_load(addr, __ATOMIC_ACQUIRE, __HIP_MEMORY_SCOPE_SYSTEM);
+        // flag = __hip_atomic_load(addr, __ATOMIC_ACQUIRE, __HIP_MEMORY_SCOPE_SYSTEM);
+        flag = atomicAdd(addr, 0);
 #endif
         return flag;
     }
