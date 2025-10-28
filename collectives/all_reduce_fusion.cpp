@@ -75,8 +75,8 @@ struct SyncComm {
         }
         __syncthreads();
         if (threadIdx.x == 0) {
-            atomicAdd(counter_ptr, 1);
             __threadfence();
+            atomicAdd(counter_ptr, 1);
         }
         __syncthreads();
     }
@@ -85,6 +85,7 @@ struct SyncComm {
         if (blockIdx.x == 0 && threadIdx.x == 0) {
             while (*reinterpret_cast<int volatile *>(counter_ptr) != gridDim.x) {
             }
+            __threadfence();
             *flag_ptr = new_flag_value;
             *counter_ptr = 0;
         }
@@ -150,7 +151,7 @@ public:
         }
     }
 
-    __device__ __forceinline__ void sync() {
+    __device__ __forceinline__ void great_sync() {
         constexpr int kBarrierFlagCount = DEFAULT_NCTAS;
         __syncthreads();
         if (threadIdx.x < NRanks) {
@@ -162,6 +163,7 @@ public:
             }
             while (ld_flag(m_current_flag) == prev_flag(m_flag_value)) {
             }
+            __threadfence_system();
         }
         __syncthreads();
     }
@@ -171,8 +173,10 @@ protected:
 #ifdef __CUDACC__
         asm volatile("st.global.release.sys.b32 [%1], %0;" ::"r"(flag), "l"(addr));
 #else
-        __hip_atomic_store(addr, flag, __ATOMIC_RELEASE, __HIP_MEMORY_SCOPE_SYSTEM);
+#pragma clang optimize off
         __threadfence_system();
+        __hip_atomic_store(addr, flag, __ATOMIC_RELEASE, __HIP_MEMORY_SCOPE_SYSTEM);
+#pragma clang optimize on
 #endif
     }
 
@@ -183,7 +187,6 @@ protected:
                      : "=r"(flag)
                      : "l"(addr));
 #else
-        __threadfence_system();
         flag = __hip_atomic_load(addr, __ATOMIC_ACQUIRE, __HIP_MEMORY_SCOPE_SYSTEM);
 #endif
         return flag;
@@ -460,7 +463,7 @@ __global__ void allreduce_fusion_kernel_twoshot_sync(AllReduceFusionParams<T> pa
     }
 
     comm::Barrier<NRanks> barrier(params.rank, comm);
-    barrier.sync();
+    barrier.great_sync();
 
     int comm_access_id = access_id + begin_tokens[params.rank] * params.hidden_dim / VEC_SIZE;
     int comm_tot_access = (begin_tokens[params.rank] + token_num_per_ranks[params.rank]) * params.hidden_dim / VEC_SIZE;
@@ -480,7 +483,7 @@ __global__ void allreduce_fusion_kernel_twoshot_sync(AllReduceFusionParams<T> pa
         }
     }
 
-    barrier.sync();
+    barrier.great_sync();
 
 #pragma unroll
     for (int r = 0; r < NRanks; ++r) {
