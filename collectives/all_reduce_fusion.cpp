@@ -397,7 +397,6 @@ __global__ void allreduce_fusion_kernel_oneshot_lamport(AllReduceFusionParams<T>
             // Push data to other ranks
             val.store(reinterpret_cast<T *>(comm.data_bufs[r]) + params.rank * params.size + idx);
         }
-        __threadfence_system();
     }
 
     for (int idx = access_id; idx < comm.clear_size; idx += access_stride) {
