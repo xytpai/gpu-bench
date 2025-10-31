@@ -509,13 +509,13 @@ void allreduce_fusion_kernel_launcher(AllReduceFusionParams<T> const &params) {
     int threads_per_token = params.hidden_dim / VEC_SIZE;
     int threads_per_block = threads_per_token;
 
-    // if (token_num <= details::kOneShotMaxToken) {
-    //     if (params.rank == 0) std::cout << "using oneshot\n";
-    //     dim3 threadsPerBlock(threads_per_block);
-    //     dim3 numBlocks(NBLOCKS_PER_GPU);
-    //     allreduce_fusion_kernel_oneshot_lamport<T, NRanks><<<numBlocks, threadsPerBlock>>>(params);
-    //     return;
-    // }
+    if (token_num <= details::kOneShotMaxToken) {
+        if (params.rank == 0) std::cout << "using oneshot\n";
+        dim3 threadsPerBlock(threads_per_block);
+        dim3 numBlocks(NBLOCKS_PER_GPU);
+        allreduce_fusion_kernel_oneshot_lamport<T, NRanks><<<numBlocks, threadsPerBlock>>>(params);
+        return;
+    }
 
     std::array<int, NRanks> begin_tokens, token_num_per_ranks;
     int remaining_token = token_num % NRanks;
@@ -625,9 +625,10 @@ public:
         gpuMemset(flag, 0, sizeof(int));
         // lamport
         gpuMemset(lamport_flag, 0, sizeof(int));
-        int sizes[1] = {nranks * size * (int)sizeof(T)};
-        gpuMemcpy(lamport_clear, sizes, sizeof(int), gpuMemcpyHostToDevice);
-        gpuMemcpy(lamport_comm_size, sizes, sizeof(int), gpuMemcpyHostToDevice);
+        int clear_size = nranks * size;
+        int comm_size = nranks * size * (int)sizeof(T);
+        gpuMemcpy(lamport_clear, &clear_size, sizeof(int), gpuMemcpyHostToDevice);
+        gpuMemcpy(lamport_comm_size, &comm_size, sizeof(int), gpuMemcpyHostToDevice);
         T *lamport_data_bufs_ = new T[3 * nranks * size];
         for (int i = 0; i < 3 * nranks * size; ++i) {
             lamport_data_bufs_[i] = allreduce_fusion::neg_zero_v<T>;
@@ -847,7 +848,7 @@ void runbench(int nranks, int size, int hidden_dim, float eps = 1e-6, float atol
 int main() {
     int nranks = enable_p2p();
     std::cout << "nranks:" << nranks << "\n";
-    std::vector<int> num_tokens_ = {513, 1257, 127, 778, 10024};
+    std::vector<int> num_tokens_ = {513, 1257, 127, 778, 10024, 3};
     std::vector<int> hidden_dims = {1024, 512 - 4, 124};
     for (auto num_tokens : num_tokens_) {
         for (auto hidden_dim : hidden_dims) {
