@@ -66,8 +66,8 @@ namespace comm {
 template <int NRanks>
 struct SyncComm {
     __device__ __forceinline__ SyncComm(void **workspace) {
-        counter_ptr = &reinterpret_cast<int *>(workspace[NRanks * 3])[0];
-        flag_ptr = &reinterpret_cast<int *>(workspace[NRanks * 3])[1];
+        counter_ptr = (int *)workspace[NRanks * 3 + 0];
+        flag_ptr = (int *)workspace[NRanks * 3 + 1];
         flag_value = *flag_ptr;
         for (int r = 0; r < NRanks; ++r) {
             comm_bufs[r] = workspace[r];
@@ -75,17 +75,14 @@ struct SyncComm {
         }
         __syncthreads();
         if (threadIdx.x == 0) {
-            __threadfence();
             atomicAdd(counter_ptr, 1);
         }
-        __syncthreads();
     }
 
     __device__ __forceinline__ void update(int new_flag_value) {
         if (blockIdx.x == 0 && threadIdx.x == 0) {
-            while (*reinterpret_cast<int volatile *>(counter_ptr) != gridDim.x) {
+            while (atomicAdd(counter_ptr, 0) != gridDim.x) {
             }
-            __threadfence();
             *flag_ptr = new_flag_value;
             *counter_ptr = 0;
         }
@@ -95,17 +92,17 @@ struct SyncComm {
     int *flag_ptr;
     void *comm_bufs[NRanks];
     void *barrier_flags[NRanks];
-    volatile int flag_value;
+    int flag_value;
 };
 
 template <int NRanks>
 struct LamportComm {
     __device__ __forceinline__ LamportComm(void **workspace, int rank) {
-        counter_ptr = &reinterpret_cast<int *>(workspace[NRanks * 3])[0];
-        flag_ptr = &reinterpret_cast<int *>(workspace[NRanks * 3])[2];
-        clear_ptr = &reinterpret_cast<int *>(workspace[NRanks * 3])[4];
+        counter_ptr = (int *)workspace[NRanks * 3 + 0];
+        flag_ptr = (int *)workspace[NRanks * 3 + 2];
+        clear_ptr = (int *)workspace[NRanks * 3 + 4];
         flag_value = *flag_ptr;
-        int comm_size = reinterpret_cast<int *>(workspace[NRanks * 3])[3];
+        int comm_size = *reinterpret_cast<int *>(workspace[NRanks * 3 + 3]);
         clear_size = *clear_ptr;
         int data_offset = flag_value % 3;
         int clear_offset = (flag_value + 2) % 3;
@@ -121,7 +118,7 @@ struct LamportComm {
 
     __device__ __forceinline__ void update(int new_clear_size) {
         if (blockIdx.x == 0 && threadIdx.x == 0) {
-            while (*reinterpret_cast<int volatile *>(counter_ptr) != gridDim.x) {
+            while (atomicAdd(counter_ptr, 0) != gridDim.x) {
             }
             *flag_ptr = (flag_value + 1) % 3;
             *clear_ptr = new_clear_size;
@@ -151,7 +148,7 @@ public:
         }
     }
 
-    __device__ __forceinline__ void great_sync() {
+    __device__ __forceinline__ void sync() {
         constexpr int kBarrierFlagCount = DEFAULT_NCTAS;
         __syncthreads();
         if (threadIdx.x < NRanks) {
@@ -163,7 +160,6 @@ public:
             }
             while (ld_flag(m_current_flag) == prev_flag(m_flag_value)) {
             }
-            __threadfence_system();
         }
         __syncthreads();
     }
@@ -173,10 +169,7 @@ protected:
 #ifdef __CUDACC__
         asm volatile("st.global.release.sys.b32 [%1], %0;" ::"r"(flag), "l"(addr));
 #else
-        __threadfence_system();
-        // __hip_atomic_store(addr, flag, __ATOMIC_RELEASE, __HIP_MEMORY_SCOPE_SYSTEM);
-        // *addr = flag;
-        atomicExch(addr, flag);
+        __hip_atomic_store(addr, flag, __ATOMIC_RELEASE, __HIP_MEMORY_SCOPE_SYSTEM);
 #endif
     }
 
@@ -187,8 +180,7 @@ protected:
                      : "=r"(flag)
                      : "l"(addr));
 #else
-        // flag = __hip_atomic_load(addr, __ATOMIC_ACQUIRE, __HIP_MEMORY_SCOPE_SYSTEM);
-        flag = atomicAdd(addr, 0);
+        flag = __hip_atomic_load(addr, __ATOMIC_ACQUIRE, __HIP_MEMORY_SCOPE_SYSTEM);
 #endif
         return flag;
     }
@@ -267,23 +259,23 @@ public:
                                        int access_id_in_token) :
         m_params(params),
         m_access_id(access_id), m_access_id_in_token(access_id_in_token) {
-        m_gamma_val.load(reinterpret_cast<T *>(params.rms_gamma) + m_access_id_in_token * VEC_SIZE);
-        m_residual_val.load(reinterpret_cast<T *>(params.residual_in) + m_access_id * VEC_SIZE);
+        m_gamma_val.load(reinterpret_cast<T *>(params.rms_gamma) + m_access_id_in_token);
+        m_residual_val.load(reinterpret_cast<T *>(params.residual_in) + m_access_id);
     }
 
     __device__ __forceinline__ void update(int access_id) {
         if (m_access_id != access_id) {
             m_access_id = access_id;
-            m_residual_val.load(reinterpret_cast<T *>(m_params.residual_in) + m_access_id * VEC_SIZE);
+            m_residual_val.load(reinterpret_cast<T *>(m_params.residual_in) + m_access_id);
         }
     }
 
     __device__ __forceinline__ void operator()(vec_t<T, VEC_SIZE> val, int token_id) {
         // val.store(reinterpret_cast<T *>(m_params.allreduce_out) + m_access_id * VEC_SIZE);
         vec_add_<T, VEC_SIZE>(val, m_residual_val);
-        val.store(reinterpret_cast<T *>(m_params.residual_out) + m_access_id * VEC_SIZE);
+        val.store(reinterpret_cast<T *>(m_params.residual_out) + m_access_id);
         val = rms_norm(val, m_gamma_val);
-        val.store(reinterpret_cast<T *>(m_params.norm_out) + m_access_id * VEC_SIZE);
+        val.store(reinterpret_cast<T *>(m_params.norm_out) + m_access_id);
     }
 
 protected:
@@ -384,46 +376,49 @@ template <typename T, int NRanks>
 __global__ void allreduce_fusion_kernel_oneshot_lamport(AllReduceFusionParams<T> params) {
     static constexpr int VEC_SIZE = details::kBytesPerAccess / sizeof(T);
     int token_id = blockIdx.x;
-    int access_id_in_token = threadIdx.x;
-    int token_stride = gridDim.x;
-    int access_id = token_id * params.hidden_dim / VEC_SIZE + access_id_in_token;
-    int access_stride = token_stride * params.hidden_dim / VEC_SIZE;
-    int tot_access = params.size / VEC_SIZE;
+    int access_id_in_token = threadIdx.x * VEC_SIZE;
+    int access_id = token_id * params.hidden_dim + access_id_in_token;
+    int access_stride = gridDim.x * params.hidden_dim;
     vec_t<T, VEC_SIZE> clear_vec;
     clear_vec.fill(neg_zero_v<T>);
     FusedOp<T> fused_op(params, access_id, access_id_in_token);
 
     comm::LamportComm<NRanks> comm(params.workspace, params.rank);
-    int clear_access = comm.clear_size / VEC_SIZE;
 
-    for (int idx = access_id; idx < tot_access; idx += access_stride) {
+    for (
+        int idx = access_id;
+        idx < params.size;
+        idx += access_stride) {
         vec_t<T, VEC_SIZE> val;
-        val.load(reinterpret_cast<T *>(params.allreduce_in) + idx * VEC_SIZE);
+        val.load(reinterpret_cast<T *>(params.allreduce_in) + idx);
         remove_neg_zero<T, VEC_SIZE>(val);
 #pragma unroll
         for (int r = 0; r < NRanks; ++r) {
             // Push data to other ranks
-            val.store(reinterpret_cast<T *>(comm.data_bufs[r]) + (params.rank * tot_access + idx) * VEC_SIZE);
+            val.store(reinterpret_cast<T *>(comm.data_bufs[r]) + params.rank * params.size + idx);
         }
-    }
-    for (int idx = access_id; idx < clear_access; idx += access_stride) {
-        // Clear comm buffer that previous kernel used
-        clear_vec.store(reinterpret_cast<T *>(comm.clear_buf) + idx * VEC_SIZE);
+        __threadfence_system();
     }
 
-    for (int idx = access_id, tidx = token_id; idx < tot_access;
-         idx += access_stride, tidx += token_stride) {
+    for (int idx = access_id; idx < comm.clear_size; idx += access_stride) {
+        // Clear comm buffer that previous kernel used
+        clear_vec.store(reinterpret_cast<T *>(comm.clear_buf) + idx);
+    }
+
+    for (
+        int idx = access_id, tidx = token_id;
+        idx < params.size;
+        idx += access_stride, tidx += gridDim.x) {
         fused_op.update(idx);
         vec_t<T, VEC_SIZE> vals[NRanks];
         volatile bool done = false;
-
         while (!done) {
             done = true;
             __threadfence();
 #pragma unroll
             for (int r = 0; r < NRanks; ++r) {
                 // LDG.128 from local rank
-                vals[r].load(reinterpret_cast<T *>(comm.data_bufs[params.rank]) + (r * tot_access + idx) * VEC_SIZE);
+                vals[r].load(reinterpret_cast<T *>(comm.data_bufs[params.rank]) + r * params.size + idx);
                 done &= !has_neg_zero<T, VEC_SIZE>(vals[r]);
             }
         }
@@ -445,34 +440,36 @@ __global__ void allreduce_fusion_kernel_twoshot_sync(AllReduceFusionParams<T> pa
                                                      std::array<int, NRanks> token_num_per_ranks) {
     static constexpr int VEC_SIZE = details::kBytesPerAccess / sizeof(T);
     int token_id = blockIdx.x;
-    int access_id_in_token = threadIdx.x;
-    int token_stride = gridDim.x;
-    int access_id = token_id * params.hidden_dim / VEC_SIZE + access_id_in_token;
-    int access_stride = token_stride * params.hidden_dim / VEC_SIZE;
-    int tot_access = params.size / VEC_SIZE;
+    int access_id_in_token = threadIdx.x * VEC_SIZE;
+    int access_id = token_id * params.hidden_dim + access_id_in_token;
+    int access_stride = gridDim.x * params.hidden_dim;
     FusedOp<T> fused_op(params, access_id, access_id_in_token);
     comm::SyncComm<NRanks> comm(params.workspace);
 
 #pragma unroll
     for (int r = 0; r < NRanks; ++r) {
-        int comm_access_id = access_id + begin_tokens[r] * params.hidden_dim / VEC_SIZE;
-        int comm_tot_access = (begin_tokens[r] + token_num_per_ranks[r]) * params.hidden_dim / VEC_SIZE;
-        for (int idx = comm_access_id; idx < comm_tot_access; idx += access_stride) {
-            reinterpret_cast<float4 *>(comm.comm_bufs[params.rank])[idx] =
-                reinterpret_cast<float4 *>(params.allreduce_in)[idx];
+        for (
+            int idx = begin_tokens[r] * params.hidden_dim + access_id;
+            idx < (begin_tokens[r] + token_num_per_ranks[r]) * params.hidden_dim;
+            idx += access_stride) {
+            reinterpret_cast<float4 *>(comm.comm_bufs[params.rank])[idx / VEC_SIZE] =
+                reinterpret_cast<float4 *>(params.allreduce_in)[idx / VEC_SIZE];
         }
     }
 
     comm::Barrier<NRanks> barrier(params.rank, comm);
-    barrier.great_sync();
+    barrier.sync();
 
     int comm_access_id = access_id + begin_tokens[params.rank] * params.hidden_dim / VEC_SIZE;
     int comm_tot_access = (begin_tokens[params.rank] + token_num_per_ranks[params.rank]) * params.hidden_dim / VEC_SIZE;
-    for (int idx = comm_access_id; idx < comm_tot_access; idx += access_stride) {
+    for (
+        int idx = begin_tokens[params.rank] * params.hidden_dim + access_id;
+        idx < (begin_tokens[params.rank] + token_num_per_ranks[params.rank]) * params.hidden_dim;
+        idx += access_stride) {
         vec_t<T, VEC_SIZE> vals[NRanks];
 #pragma unroll
         for (int r = 0; r < NRanks; ++r) {
-            vals[r].load(reinterpret_cast<T *>(comm.comm_bufs[r]) + idx * VEC_SIZE);
+            vals[r].load(reinterpret_cast<T *>(comm.comm_bufs[r]) + idx);
         }
 #pragma unroll
         for (int r = 1; r < NRanks; ++r) {
@@ -480,22 +477,22 @@ __global__ void allreduce_fusion_kernel_twoshot_sync(AllReduceFusionParams<T> pa
         }
 #pragma unroll
         for (int r = 0; r < NRanks; ++r) {
-            vals[0].store(reinterpret_cast<T *>(comm.comm_bufs[r]) + (tot_access + idx) * VEC_SIZE);
+            vals[0].store(reinterpret_cast<T *>(comm.comm_bufs[r]) + params.size + idx);
         }
     }
 
-    barrier.great_sync();
+    barrier.sync();
 
 #pragma unroll
     for (int r = 0; r < NRanks; ++r) {
-        int comm_access_id = access_id + begin_tokens[r] * params.hidden_dim / VEC_SIZE;
-        int comm_token_id = token_id + begin_tokens[r];
-        int comm_tot_access = (begin_tokens[r] + token_num_per_ranks[r]) * params.hidden_dim / VEC_SIZE;
-        for (int idx = comm_access_id, tidx = comm_token_id; idx < comm_tot_access;
-             idx += access_stride, tidx += token_stride) {
+        for (
+            int idx = begin_tokens[r] * params.hidden_dim + access_id, tidx = begin_tokens[r] + token_id;
+            idx < (begin_tokens[r] + token_num_per_ranks[r]) * params.hidden_dim;
+            idx += access_stride, tidx += gridDim.x) {
             fused_op.update(idx);
             vec_t<T, VEC_SIZE> sum_val;
-            sum_val.load(reinterpret_cast<T *>(comm.comm_bufs[params.rank]) + (tot_access + idx) * VEC_SIZE);
+            sum_val.load(reinterpret_cast<T *>(comm.comm_bufs[params.rank]) + params.size + idx);
+            sum_val.store(reinterpret_cast<T *>(params.residual_out) + idx);
             fused_op(sum_val, tidx);
         }
     }
@@ -512,13 +509,13 @@ void allreduce_fusion_kernel_launcher(AllReduceFusionParams<T> const &params) {
     int threads_per_token = params.hidden_dim / VEC_SIZE;
     int threads_per_block = threads_per_token;
 
-    if (token_num <= details::kOneShotMaxToken) {
-        if (params.rank == 0) std::cout << "using oneshot\n";
-        dim3 threadsPerBlock(threads_per_block);
-        dim3 numBlocks(NBLOCKS_PER_GPU);
-        allreduce_fusion_kernel_oneshot_lamport<T, NRanks><<<numBlocks, threadsPerBlock>>>(params);
-        return;
-    }
+    // if (token_num <= details::kOneShotMaxToken) {
+    //     if (params.rank == 0) std::cout << "using oneshot\n";
+    //     dim3 threadsPerBlock(threads_per_block);
+    //     dim3 numBlocks(NBLOCKS_PER_GPU);
+    //     allreduce_fusion_kernel_oneshot_lamport<T, NRanks><<<numBlocks, threadsPerBlock>>>(params);
+    //     return;
+    // }
 
     std::array<int, NRanks> begin_tokens, token_num_per_ranks;
     int remaining_token = token_num % NRanks;
@@ -628,14 +625,14 @@ public:
         gpuMemset(flag, 0, sizeof(int));
         // lamport
         gpuMemset(lamport_flag, 0, sizeof(int));
-        int sizes[1] = {nranks * size};
+        int sizes[1] = {nranks * size * (int)sizeof(T)};
         gpuMemcpy(lamport_clear, sizes, sizeof(int), gpuMemcpyHostToDevice);
         gpuMemcpy(lamport_comm_size, sizes, sizeof(int), gpuMemcpyHostToDevice);
-        T *lamport_data_bufs_ = new T[nranks * size];
-        for (int i = 0; i < nranks * size; ++i) {
+        T *lamport_data_bufs_ = new T[3 * nranks * size];
+        for (int i = 0; i < 3 * nranks * size; ++i) {
             lamport_data_bufs_[i] = allreduce_fusion::neg_zero_v<T>;
         }
-        gpuMemcpy(lamport_data_bufs, lamport_data_bufs_, nranks * size * sizeof(T), gpuMemcpyHostToDevice);
+        gpuMemcpy(lamport_data_bufs, lamport_data_bufs_, 3 * nranks * size * sizeof(T), gpuMemcpyHostToDevice);
         delete[] lamport_data_bufs_;
         gpuDeviceSynchronize();
     }
@@ -850,8 +847,8 @@ void runbench(int nranks, int size, int hidden_dim, float eps = 1e-6, float atol
 int main() {
     int nranks = enable_p2p();
     std::cout << "nranks:" << nranks << "\n";
-    std::vector<int> num_tokens_ = {513, 1257, 778, 10024};
-    std::vector<int> hidden_dims = {1024, 512 - 4};
+    std::vector<int> num_tokens_ = {513, 1257, 127, 778, 10024};
+    std::vector<int> hidden_dims = {1024, 512 - 4, 124};
     for (auto num_tokens : num_tokens_) {
         for (auto hidden_dim : hidden_dims) {
             int size = num_tokens * hidden_dim;
